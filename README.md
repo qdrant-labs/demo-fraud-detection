@@ -5,67 +5,22 @@
   </picture>
 </p>
 
-A live payments wall for a fictional card network. Synthetic transactions ping on a dark world map at their real coordinates, fraud ignites red within a second or two of launch (sub-second on a deployment pinned next to the cluster), and every alert plays out as a story: the camera zooms to the customer, and one panel tells the rest in plain language: what happened, how the alert was caught in vector space, and how many milliseconds it took. "Normal" is defined per customer, and per-customer baselines are expensive to run elsewhere: per-namespace pricing, table partitioning, or a separate index per customer. This demo keeps 200 customer baselines in one [Qdrant](https://qdrant.tech) collection, isolates each customer with a tenant-keyed payload index, and scores every new event against that customer's own history the moment it lands. Qdrant is a vector search engine, and here it is the only backend: no queue, no cache, no relational store.
+A live fraud wall for a fictional card network. Synthetic transactions ping on a dark world map at their real coordinates, fraud ignites red within about a second, and every alert opens a panel that shows how it was caught in vector space and how many milliseconds it took.
 
-## What You See
+The problem it demonstrates: "normal" is different for every customer, and per-customer baselines are expensive to run elsewhere (per-namespace pricing, table partitioning, or a separate index per customer). This demo keeps 200 customer baselines (109,446 points) in one [Qdrant](https://qdrant.tech) collection, isolates each customer with a tenant-keyed payload index, and scores every new event against that customer's own history the moment it lands. Qdrant is a vector search engine, and here it is the only backend: no queue, no cache, no relational store.
 
-The wall (`/`) is a dark, full-screen world map. Each transaction pings at its city the moment it scores, and traffic follows daylight around the globe because every customer transacts in their home city's waking hours. Drag to pan. When an event alerts, the camera zooms to fit the customer's home and the event locations in the visible map area, and an impossible-travel alert draws a glowing arc between the two cities labeled with the distance in km. Alerts from one customer within 20 seconds coalesce into a single story, so a six-charge burst reads as one attack. A ticker shows events per second, p95 score latency, and total points, live.
+## The Wall
 
-A pinned story opens one panel that reads top to bottom: the plain-language reason and the charge trail, then How This Alert Was Caught in three steps (every transaction becomes 31 numbers; Qdrant finds the 10 most similar past transactions in this customer's own history; the distance ratio past 2.0 decides), with the animated vector-space scatter between the steps: the baseline cloud fades in (2-D PCA computed in the browser), the event drops in red, the 10 pinned neighbors light up amber, and the arithmetic counts up. A closing section, Caught In N ms, breaks the speed into history lookup, similarity search, and saving the event. The map shows where the fraud happened; the panel shows why the search flagged it and how fast.
+Open `/` and traffic follows daylight around the globe. Alerts collect in a queue; click one and the camera zooms to the customer, a geo-hop draws a distance-labeled arc between the two cities, and the panel walks through the catch: the transaction becomes a 31-dimensional vector, Qdrant finds its 10 nearest neighbors in this customer's own history, and the distance ratio past 2.0 decides. An animated scatter (2-D PCA of the customer's baseline) plays the same arithmetic visually, and a timing breakdown shows the milliseconds per Qdrant call.
 
-Alerts collect in a queue at the lower left, one entry per attack. By default nothing plays on its own: click an entry to pin its story, study it as long as you want, and close it with the × when done. The Auto Play toggle switches to a self-running loop that plays each new story for about seven seconds, which is the mode for a booth wall; the setting survives reloads.
+Booth flow: toggle Auto Play for a self-running wall, or share the URL to a phone. Launch An Attack opens a drawer with three attack cards (Geo-Hop, Card Testing Burst, Amount Ladder); the flare lands on the map within a second or two, and See The Evidence pins the story, down to the 10 pinned neighbors and the line proving the stored score reproduces from them.
 
-Launch An Attack opens a drawer on the wall itself: you get a pre-seeded persona, tap one of three attack cards (Geo-Hop, Card Testing Burst, or Amount Ladder), watch the per-event scores stream in, and see the flare land on the map behind the drawer. Once the sequence alerts, See The Evidence pins its story in the alert panel on the right. The wall is responsive and the drawer works on a phone, so the shareable link for the booth hero moment is the main URL: an audience member opens it, launches an attack, and watches the flare land on the projected wall.
+## How Qdrant Is Used
 
-View Full Evidence at the bottom of the alert panel expands in place: the ten nearest neighbors with their real distances, and one line proving the stored score reproduces from that pinned neighbor set. The score comes from `GET /api/alert/[id]`, recomputed from the neighbor set pinned at scoring time, so it reproduces the original number exactly.
+Everything lives in one collection with a 31-dimensional named vector (Euclid). The features are engineered by a pure function, no learned model, which is what lets the evidence panel explain every score exactly. Scoring is three Qdrant round trips per event:
 
-### Demo Script
-
-1. Open the wall: events pinging around the world map, ticker live.
-2. Turn on Auto Play for a self-running wall, or click a story in the queue (one lands every 20 seconds or so): the camera zooms in, and the panel walks the audience from what happened, through the three steps of how it was caught, to the milliseconds it took.
-3. Click View Full Evidence in the panel: the neighbor list with real distances expands in place, with the line showing the stored score reproduced from the pinned neighbor set.
-4. Hero: open the launch drawer on the wall, or share the wall's URL with a phone. Pick an attack card and the flare lands before the phone drops; See The Evidence pins the story for the fraud it launched.
-5. Mention: every event was searchable the instant it landed, in one collection, across 200 customers with one baseline each.
-
-## Architecture
-
-```mermaid
-flowchart LR
-  subgraph browser["Browser"]
-    W["Wall<br/>/"]
-  end
-  subgraph vercel["Vercel Functions"]
-    S["GET /api/stream<br/>SSE loop"]
-    A["POST /api/attack<br/>NDJSON"]
-  end
-  Q[("Qdrant Cloud<br/>fraud_demo collection")]
-
-  W -- EventSource --> S
-  W -- "launch attack (drawer)" --> A
-  S -- "generate, score, scroll for attacks" --> Q
-  A -- "score, upsert" --> Q
-  S -- tx events --> W
-  A -- per-event status --> W
-```
-
-Qdrant is the only state. The SSE loop generates events on the fly, seeded by `(world_seed, time_bucket)` with deterministic event IDs, so a reconnect regenerates byte-identical events for the same bucket and upserts stay idempotent. A browser launch may hit a different serverless instance than the wall's stream, so the wall picks up recent browser attacks with a timestamp-filtered scroll: Qdrant is the message bus.
-
-Scored events would otherwise accumulate forever (each open wall adds 5 to 6 points per second), so each new stream connection fires a janitor that deletes scored events older than 24 hours. Seeded baseline points carry no `score` payload field, so the janitor's `is_empty` guard never touches them; the collection stays bounded at the 109,446 baselines plus at most one day of live traffic. The check for this lives in [`evals/janitor.ts`](evals/janitor.ts).
-
-| Route | Method | Purpose |
-|---|---|---|
-| `/` | GET | The wall, including the launch drawer and the alert panel |
-| `/api/stream` | GET | SSE loop: generates, scores, and relays browser attacks |
-| `/api/attack` | POST | Runs one attack sequence, streams per-event status as NDJSON |
-| `/api/alert/[id]` | GET | JSON evidence for one scored event: pinned neighbors and the recomputed score |
-| `/api/baseline/[tenant]` | GET | A customer's baseline vectors for the scatter plot |
-| `/api/persona` | GET | Assigns a pre-seeded persona for the wall's launch drawer |
-
-## How Scoring Works
-
-Each transaction becomes a 31-dimensional engineered vector from a pure function, with no learned model, which is what lets the evidence panel explain a score honestly. The dimension layout and per-block weights live in the header comment of [`src/lib/features.ts`](src/lib/features.ts). Scoring is three Qdrant round trips per event: a context scroll for the customer's recent history (feeds the recent-history features and the cold-start check), a k-nearest-neighbor formula query within the customer's [tenant](https://qdrant.tech/documentation/manage-data/multitenancy/), then an upsert of the scored event so it is immediately searchable. The kNN query reorders neighbors by recency with an `exp_decay` term and excludes the last hour, so a fraud burst cannot become its own nearest-neighbor cluster and mask itself.
-
-The score is a self-normalizing kNN ratio in the style of a local outlier factor: `d_event / d_local`, where `d_event` is the mean distance from the event to its ten neighbors, and `d_local` is the mean distance from those neighbors to their own centroid. It alerts when the ratio exceeds 2.0. The first 30 transactions per customer are a learning window: they are scored but never alerted, so a fresh customer with no baseline does not scream red. The Euclidean prefetch score sorts closest first while formula queries sort larger scores first, so the distance term is negated before it mixes with `exp_decay`; see the [search relevance docs](https://qdrant.tech/documentation/search/search-relevance/) for the formula query mechanics.
+1. **Context scroll.** The customer's 30 most recent points, `order_by` a datetime-indexed `ts`, feeding recent-history features and the cold-start check (a customer's first 30 events score but never alert).
+2. **kNN formula query.** The 10 nearest neighbors inside the customer's [tenant](https://qdrant.tech/documentation/manage-data/multitenancy/), reordered by recency with an `exp_decay` term. The prefetch filter excludes the last hour, so a fraud burst cannot become its own nearest-neighbor cluster and mask itself:
 
 ```json
 {
@@ -98,68 +53,50 @@ The score is a self-normalizing kNN ratio in the style of a local outlier factor
 }
 ```
 
-The response score is the recency-adjusted ranking score, so `d_event` and `d_local` are recomputed client-side from the returned neighbor vectors, and the evidence panel shows that exact arithmetic.
+   The Euclid prefetch score sorts closest first while formula queries sort larger scores first, so the distance term is negated before it mixes with `exp_decay`; see the [search relevance docs](https://qdrant.tech/documentation/search/search-relevance/).
 
-## Eval Results
+3. **Upsert with `wait: true`.** The scored event is searchable immediately, so the next event in a burst scores against it, with no refresh cycle.
 
-Every number below is measured. Scripts live in [`evals/`](evals); run them with `npm run evals`.
+The score is a self-normalizing kNN ratio in the style of a local outlier factor: `d_event / d_local`, where `d_event` is the mean distance from the event to its 10 neighbors and `d_local` is the mean distance from those neighbors to their own centroid. It alerts past 2.0. The neighbor IDs, distances, and score are pinned on the point's payload at scoring time, so the evidence panel reproduces the exact arithmetic later even after newer points land.
 
-| # | Eval | Result |
-|---|---|---|
-| 1 | API contract | 5/5 pass, including a canary proving a misspelled request field is silently accepted, which is why every test asserts on computed values instead of status codes |
-| 2 | Motif detection | Sequence recall 0.833, precision 0.754 at threshold 2.0 on the default seed, 0.950 and 0.833 on a held-out seed (confusion table below) |
-| 3 | Cold start | Pass: zero alerts inside a fresh customer's 30-event learning window, normal scoring after |
-| 4 | Determinism | Pass: two runs at the same world seed produce identical alert sets |
-| 5 | Latency | Per-event scoring p95 475 ms and launch-to-wall flare 0.9-2.1 s, both measured from a laptop one region away (~100 ms RTT per round trip, three round trips per event); end-to-end flare on a region-pinned deployment pending, same as eval 7 |
-| 6 | Tenant isolation | Pass: scoring an event against the wrong customer's baseline shifts the score by 56.5% relative difference |
-| 7 | Public browser smoke | Pending deployment |
+Two more Qdrant patterns carry the rest of the app:
 
-Motif-detection confusion table (default seed, 5k events, 60 labeled fraud sequences, 20 per motif):
+- **Multitenancy.** The `tenant_id` keyword index is created with `is_tenant: true`, so Qdrant co-locates each customer's vectors and the per-customer kNN stays fast as the collection grows.
+- **Qdrant as the message bus.** A phone-launched attack may score on a different serverless instance than the wall's stream, so the wall picks it up with a timestamp-filtered scroll on an indexed `channel_src` field. No queue needed.
+- **Bounded growth.** Each stream connection fires a janitor that deletes scored events older than 24 hours with a `must_not is_empty(score)` filter; seeded baseline points carry no `score` field, so they survive ([`evals/janitor.ts`](evals/janitor.ts) checks this).
 
-```
-                 alerted   not alerted
-  fraud-labeled      156           104
-  motif=none          51          4650
-Recall (sequences): 50/60 = 0.833   per-motif: card_testing 1.00 | geo_hop 1.00 | ladder 0.50
-Precision:          156/207 = 0.754
-```
+Feature layout and weights live in the header of [`src/lib/features.ts`](src/lib/features.ts); the tuning record is in [`evals/TUNING.md`](evals/TUNING.md).
 
-The eval places each fraud burst inside the background stream, so fraud interleaves with the customer's own traffic. Threshold 2.0 catches every card-testing and geo-hop sequence and 10 of the 20 ladder sequences. A ladder step competes with fresh background events at the same merchant for the recent-history slots, so its escalation chain is shorter by the time it scores. The full threshold sweep, the held-out-seed run, and the tuning rounds behind these constants are in [`evals/TUNING.md`](evals/TUNING.md).
+## Measured Results
 
-Latency is dominated by RTT because scoring is three round trips. Pin the Vercel function region to the Qdrant cluster's region, or cross-region RTT alone eats the sub-second flare budget.
+Every number is measured by scripts in [`evals/`](evals); run them with `npm run evals`.
 
-### Deviations From The Original Spec
+| Eval | Result |
+|---|---|
+| Motif detection | Sequence recall 0.833, precision 0.754 at threshold 2.0 on the default seed; 0.950 and 0.833 on a held-out seed |
+| Latency | Per-event scoring p95 475 ms measured one region away (~100 ms RTT, three round trips per event); launch-to-wall flare 0.9-2.1 s |
+| Cold start | Pass: zero alerts inside a fresh customer's 30-event learning window |
+| Tenant isolation | Pass: scoring against the wrong customer's baseline shifts the score by 56.5% |
+| Determinism | Pass: two runs at the same world seed produce identical alert sets |
+| API contract | 5/5 pass, asserting on computed values, not status codes |
 
-- Alert threshold is 2.0, tuned down from the spec's starting 2.5 via the motif-detection sweep.
-- The kNN query excludes neighbors from the last hour, which the spec did not call for, to stop a burst from masking itself.
-- Dimension 30 is redefined: a count of consecutive same-merchant escalations rather than a single step ratio, because one step ratio cannot separate laddering from a log-normal baseline.
-- Feature weights on dimensions 25, 26, 27, 29, and 30 changed from the spec, each recorded in `evals/TUNING.md`.
-- `lat` and `lon` are stored in the payload on top of the spec's list, so a later event's impossible-travel feature can read the prior points' coordinates.
-- Tenant active hours follow the home city's local time (roughly 7:00 to 22:00 local, mapped to UTC by longitude), and the live generator emits background traffic only for tenants inside their window. The spec pinned all windows to 6-23 UTC, which made every event outside those hours score as an hour-of-day anomaly: measured live at 23:21 UTC, 27% of background events alerted. With daylight-following windows, every wall-clock hour has 60-175 active tenants and background traffic stays inside its own baseline. Injected fraud motifs stay unfiltered by hour; fraud at an odd hour is realistic and part of the signal.
+Latency is dominated by round-trip time, so deploy the compute next to the Qdrant cluster: cross-region RTT alone eats the sub-second flare budget.
 
-## Setup
+## Run It
 
-Requires a Qdrant Cloud cluster (a 1-2 GB cluster is plenty) and Node 20 or newer.
+Requires a Qdrant Cloud cluster (1-2 GB is plenty) and Node 20 or newer.
 
 ```bash
 npm install
-cp .env.example .env          # then fill in QDRANT_URL and QDRANT_API_KEY
+cp .env.example .env          # fill in QDRANT_URL and QDRANT_API_KEY
 npx tsx --env-file=.env scripts/seed.ts   # ~100k baseline points across 200 customers
 npm run dev                   # http://localhost:3000
 npm run evals                 # runs the suite against throwaway collections
 ```
 
-### Deploy On Vercel
+## Scope
 
-1. Set `QDRANT_URL` and `QDRANT_API_KEY` (and optional `QDRANT_COLLECTION`) as environment variables on the project.
-2. Pin the function region to the region of your Qdrant cluster. Each scored event costs three Qdrant round trips, so cross-region RTT alone can break the sub-second flare budget.
-3. Seed the collection once from a machine with the same env vars before the first demo.
-
-Production URL: (deployment pending).
-
-## A Note On What This Is
-
-This demonstrates the retrieval mechanics of per-customer anomaly scoring on synthetic data. It is not a production fraud model, and the eval numbers describe this synthetic world, not real payments. The synthetic world's background customers never visit a new merchant, so the new-merchant signal separates fraud from normal traffic more cleanly here than in real payments. The consecutive-escalation feature on dimension 30 was designed against this world's ladder motif. The one-hour neighbor exclusion is sized to this demo's motif durations, which run to about twelve minutes, and it is not a general fraud rule. The alert threshold of 2.0 was chosen on this generator and validated on a held-out seed: sequence recall 0.833 and precision 0.754 on the default seed, and 0.950 and 0.833 on the held-out seed.
+This demonstrates the retrieval mechanics of per-customer anomaly scoring on synthetic data. It is not a production fraud model: the synthetic world separates fraud from normal traffic more cleanly than real payments, the threshold and features were tuned on this generator (validated on a held-out seed), and the one-hour neighbor exclusion is sized to this demo's motif durations.
 
 ---
 
