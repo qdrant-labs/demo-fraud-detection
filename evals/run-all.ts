@@ -16,6 +16,7 @@ const SUITES = [
   "cold-start",
   "determinism",
   "tenant-isolation",
+  "janitor",
 ];
 
 const results: { suite: string; ok: boolean }[] = [];

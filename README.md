@@ -13,6 +13,8 @@ The wall (`/`) is a dark, full-screen world map. Each transaction pings at its c
 
 Beside each story, the How Qdrant Sees It panel replays the alert in vector space: the customer's baseline scatter fades in (2-D PCA of their 31-d vectors, computed in the browser), the event drops in red, its 10 pinned neighbors light up amber, and d_event, d_local, and their ratio count up against the 2.0 threshold. The map shows where the fraud happened; this panel shows why the search flagged it.
 
+Alerts collect in a queue at the lower left, one entry per attack. By default nothing plays on its own: click an entry to pin its story, study it as long as you want, and close it with the × when done. The Auto Play toggle switches to a self-running loop that plays each new story for about seven seconds, which is the mode for a booth wall; the setting survives reloads.
+
 The evidence panel (`/alert/[id]`) opens when you click an alert. It shows the score arithmetic step by step, the ten nearest neighbors with their real distances, and the customer's baseline projected to 2-D with PCA computed in the browser. The score it displays is recomputed from the neighbor set pinned at scoring time, so it reproduces the original number exactly.
 
 The launch flow (`/launch`) is the hero moment. A visitor is assigned a pre-seeded persona ("You are Customer #4711, here is their normal life"), taps one of three attack cards (Geo-Hop, Card Testing Burst, or Amount Ladder), and watches the generated sequence flare on the wall. When no projected wall is open, the launch page opens a compact embedded wall strip so the demo still reads from a single browser tab.
@@ -20,7 +22,7 @@ The launch flow (`/launch`) is the hero moment. A visitor is assigned a pre-seed
 ### Demo Script
 
 1. Open the wall: events pinging around the world map, ticker live.
-2. Wait for a flare (one lands every 20 seconds or so): the camera zooms in, read the one-liner, and the side panel walks the audience from baseline cloud to neighbors to the division that produced the score.
+2. Turn on Auto Play for a self-running wall, or click a story in the queue (one lands every 20 seconds or so): the camera zooms in, read the one-liner, and the side panel walks the audience from baseline cloud to neighbors to the division that produced the score.
 3. Click the alert for the full evidence panel: the neighbor list with real distances and the exact arithmetic, reproduced from the pinned neighbor set.
 4. Hero: share the launch link, let someone pick an attack card, and watch the flare land before the phone drops. Their phone then opens the evidence panel for the fraud they launched.
 5. Mention: every event was searchable the instant it landed, in one collection, across 200 customers with one baseline each.
@@ -48,6 +50,8 @@ flowchart LR
 ```
 
 Qdrant is the only state. The SSE loop generates events on the fly, seeded by `(world_seed, time_bucket)` with deterministic event IDs, so a reconnect regenerates byte-identical events for the same bucket and upserts stay idempotent. A browser launch may hit a different serverless instance than the wall's stream, so the wall picks up recent browser attacks with a timestamp-filtered scroll: Qdrant is the message bus.
+
+Scored events would otherwise accumulate forever (each open wall adds 5 to 6 points per second), so each new stream connection fires a janitor that deletes scored events older than 24 hours. Seeded baseline points carry no `score` payload field, so the janitor's `is_empty` guard never touches them; the collection stays bounded at the 109,446 baselines plus at most one day of live traffic. The check for this lives in [`evals/janitor.ts`](evals/janitor.ts).
 
 | Route | Method | Purpose |
 |---|---|---|

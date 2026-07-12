@@ -103,6 +103,36 @@ async function ensureCollectionNow(): Promise<void> {
     field_schema: "bool",
     wait: true,
   });
+
+  // score: float index. The janitor (deleteStaleScored) spares seeded baseline
+  // points with `must_not is_empty(score)`, and Qdrant 1.18 requires an index on
+  // a field before it can appear in an is_empty filter (the same rule that forces
+  // the alerted index above). Baseline points carry no score, so this index is
+  // sparse over them, which is exactly what is_empty needs.
+  await qdrant.createPayloadIndex(COLLECTION, {
+    field_name: "score",
+    field_schema: "float",
+    wait: true,
+  });
+}
+
+// Delete scored live events older than `maxAgeMs` from the current COLLECTION.
+// The wall upserts every scored event and never removes them, so a long-open
+// wall grows the collection without bound (~5-6 points/s). The `must_not
+// is_empty(score)` guard is load-bearing: seeded baseline points carry no
+// `score` payload field, so they never match this filter and survive. Verified
+// the is_empty condition shape against the Qdrant filtering docs.
+// ponytail: a scheduled sweep would be tidier, but PLAN forbids a cron/queue;
+// the SSE route fires this per connection instead (a few times an hour).
+export async function deleteStaleScored(maxAgeMs: number): Promise<void> {
+  const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+  await qdrant.delete(COLLECTION, {
+    wait: true,
+    filter: {
+      must: [{ key: "ts", range: { lt: cutoff } }],
+      must_not: [{ is_empty: { key: "score" } }],
+    },
+  });
 }
 
 // Compact payload keys for the five recent-history feature values. Written back

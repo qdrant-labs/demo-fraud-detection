@@ -10,7 +10,7 @@
 // no drift.
 
 import { scoreEvent, type StageTimings } from "@/lib/score";
-import { COLLECTION, ensureCollection, qdrant } from "@/lib/qdrant";
+import { COLLECTION, deleteStaleScored, ensureCollection, qdrant } from "@/lib/qdrant";
 import {
   BUCKET_MS,
   EPOCH,
@@ -35,6 +35,7 @@ export const maxDuration = 300;
 const POLL_MS = 500;
 const STATS_EVERY_TICKS = 10; // ~5s at POLL_MS = 500ms
 const ATTACK_WINDOW_MS = 15_000; // browser-attack scroll look-back
+const JANITOR_MAX_AGE_MS = 24 * 60 * 60 * 1000; // drop scored events older than this
 
 function currentBucket(): number {
   return Math.floor((Date.now() - EPOCH) / BUCKET_MS);
@@ -109,6 +110,13 @@ function homeOf(tenantId: string): {
 
 export async function GET(req: Request): Promise<Response> {
   await ensureCollection();
+
+  // Bound the collection's growth. Connections recycle every few minutes on
+  // Vercel, so this runs a few times an hour. Fire-and-forget: a slow delete
+  // must not delay the first tick, so it is not awaited on the hot path.
+  deleteStaleScored(JANITOR_MAX_AGE_MS).catch((err) =>
+    console.error("janitor delete failed", err),
+  );
 
   const encoder = new TextEncoder();
   const emittedIds = new Set<string | number>(); // this connection's dedupe

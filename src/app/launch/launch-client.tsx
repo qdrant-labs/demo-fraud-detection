@@ -145,6 +145,12 @@ export default function LaunchClient({
               Pick an attack and watch it flare on the wall.
             </p>
           </div>
+          <Link
+            href="/"
+            className="ml-auto shrink-0 rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-700/50"
+          >
+            Open The Wall
+          </Link>
         </header>
 
         {/* Persona card */}

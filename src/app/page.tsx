@@ -12,8 +12,9 @@
 // dedupe/ticker/reconnect machinery is unchanged from the hash-dot wall; only the
 // rendering and the story choreography are new.
 
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { CITIES, haversineKm } from "@/lib/geo";
 import {
   fitCamera,
@@ -49,14 +50,6 @@ interface WallEvent {
   d_local?: number;
 }
 
-interface Alert {
-  id: string | number;
-  merchant: string;
-  city: string;
-  score: number;
-  explanation: string;
-}
-
 // A live map ping, positioned in geographic coordinates and faded by age.
 interface Ping {
   lon: number;
@@ -86,9 +79,10 @@ const LATENCY_CAP = 300;
 const EPS_WINDOW_MS = 2000;
 
 const COALESCE_MS = 20_000; // same-customer alerts within this window = one story
-const QUEUE_CAP = 3; // pending stories; oldest unplayed is dropped past this
-const HOLD_MS = 7000; // how long a story holds before easing back to world
+const STORY_CAP = 10; // stories kept in the rail, newest first; oldest is dropped
+const HOLD_MS = 7000; // auto mode: how long a story holds before easing back to world
 const CAM_MS = 800; // camera transition duration
+const AUTO_KEY = "wall-auto-play"; // localStorage flag for the pacing toggle
 
 // Mirrors score.ts ALERT_THRESHOLD; display-only, the server sends each verdict.
 const THRESHOLD = 2.0;
@@ -132,6 +126,60 @@ function awayEvent(story: Story): WallEvent | null {
   return null;
 }
 
+// A glowing quadratic arc from home to the away city, drawn progressively, with
+// the great-circle distance labeled at its apex. `playStart` is when the story
+// pinned (performance.now), which drives the draw progress.
+function drawArc(
+  ctx: CanvasRenderingContext2D,
+  story: Story,
+  away: WallEvent,
+  cam: Camera,
+  w: number,
+  h: number,
+  now: number,
+  playStart: number,
+): void {
+  const [hx, hy] = project(story.home.lon, story.home.lat, cam, w, h);
+  const [ex, ey] = project(away.lon, away.lat, cam, w, h);
+  const cx = (hx + ex) / 2;
+  const cy = (hy + ey) / 2 - Math.min(200, Math.hypot(ex - hx, ey - hy) * 0.4 + 40);
+
+  const p = ease((now - playStart) / 1200);
+  ctx.strokeStyle = "rgba(239, 68, 68, 0.85)";
+  ctx.lineWidth = 2;
+  ctx.shadowColor = "rgba(239, 68, 68, 0.7)";
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy);
+  const steps = 40;
+  let headX = hx;
+  let headY = hy;
+  for (let i = 1; i <= steps; i++) {
+    const u = (i / steps) * p;
+    const x = (1 - u) * (1 - u) * hx + 2 * (1 - u) * u * cx + u * u * ex;
+    const y = (1 - u) * (1 - u) * hy + 2 * (1 - u) * u * cy + u * u * ey;
+    ctx.lineTo(x, y);
+    headX = x;
+    headY = y;
+  }
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // A bright head that travels the arc as it draws.
+  ctx.beginPath();
+  ctx.arc(headX, headY, 4, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(254, 202, 202, 1)";
+  ctx.fill();
+
+  // Distance label at the apex.
+  const km = haversineKm(story.home.lat, story.home.lon, away.lat, away.lon);
+  ctx.fillStyle = "rgba(248, 250, 252, 0.9)";
+  ctx.font = "600 13px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(`${Math.round(km).toLocaleString("en-US")} km`, cx, cy - 8);
+  ctx.textAlign = "start";
+}
+
 export default function Wall() {
   const router = useRouter();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -140,21 +188,29 @@ export default function Wall() {
   const eventTimesRef = useRef<number[]>([]);
   const latencyRef = useRef<number[]>([]);
 
-  // Camera + its in-flight transition.
-  const camRef = useRef<Camera>({ lon: 0, lat: 8, s: 4 });
-  const camFromRef = useRef<Camera>(camRef.current);
-  const camToRef = useRef<Camera>(camRef.current);
+  // Camera + its in-flight transition. All three start at the same view; the
+  // frame loop replaces them with fresh objects, so sharing the initial literal
+  // is safe (and keeps refs out of the render path).
+  const initialCam: Camera = { lon: 0, lat: 8, s: 4 };
+  const camRef = useRef<Camera>(initialCam);
+  const camFromRef = useRef<Camera>(initialCam);
+  const camToRef = useRef<Camera>(initialCam);
   const camStartRef = useRef<number>(0);
 
-  // Story orchestration. Refs are the source of truth (read by the rAF loop);
-  // `force` re-renders the card/panel when the displayed story changes.
-  const queueRef = useRef<Story[]>([]);
-  const playingRef = useRef<Story | null>(null);
-  const phaseRef = useRef<"attract" | "playing">("attract");
+  // Story orchestration. `stories` is the visible rail (newest first); `playingId`
+  // is the pinned story shown on the wall, or null for the world view. Manual is
+  // the default: stories pile up and the viewer clicks one to pin it. Auto plays
+  // the newest unplayed story on a timer. The rAF loop and the auto-play timer
+  // run outside React's render, so they read these through the mirror refs below.
+  const [stories, setStories] = useState<Story[]>([]);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const [auto, setAuto] = useState(false);
   const playStartRef = useRef<number>(0);
-  const [, force] = useReducer((x: number) => x + 1, 0);
+  const storiesRef = useRef<Story[]>(stories);
+  const playingIdRef = useRef<string | null>(playingId);
+  const autoRef = useRef<boolean>(auto);
+  const playingStoryRef = useRef<Story | null>(null);
 
-  const [alerts, setAlerts] = useState<Alert[]>([]);
   const [conn, setConn] = useState<Conn>("connecting");
   const [points, setPoints] = useState<number | null>(null);
   const [eps, setEps] = useState(0);
@@ -164,6 +220,35 @@ export default function Wall() {
     camFromRef.current = camRef.current;
     camToRef.current = cam;
     camStartRef.current = performance.now();
+  }
+
+  // Coalesce an alerted event into an existing same-customer story within
+  // COALESCE_MS (whether or not it is displayed), else start a new story at the
+  // front of the rail. Appends keep events[0] stable, which the panel memo needs.
+  function enqueueStory(ev: WallEvent): void {
+    const now = performance.now();
+    setStories((prev) => {
+      const idx = prev.findIndex(
+        (s) => s.tenant_id === ev.tenant_id && now - s.lastAt < COALESCE_MS,
+      );
+      if (idx !== -1) {
+        const s = prev[idx];
+        const updated: Story = { ...s, events: [...s.events, ev], lastAt: now };
+        const next = [...prev];
+        next[idx] = updated;
+        return next;
+      }
+      const story: Story = {
+        id: String(ev.id),
+        tenant_id: ev.tenant_id,
+        events: [ev],
+        home: { city: ev.home_city, lat: ev.home_lat, lon: ev.home_lon },
+        lastAt: now,
+        played: false,
+      };
+      // Newest first; drop the oldest past the cap.
+      return [story, ...prev].slice(0, STORY_CAP);
+    });
   }
 
   // --- SSE stream ---------------------------------------------------------
@@ -196,27 +281,7 @@ export default function Wall() {
       if (ev.timings) latencyRef.current.push(ev.timings.total);
       if (latencyRef.current.length > LATENCY_CAP) latencyRef.current.shift();
 
-      if (ev.alerted) {
-        // One rail entry per attack, not one per burst event: skip when the
-        // newest entry is already this merchant's alert in this city. The story
-        // card carries the burst's full trail. Capped at 5 so the rail never
-        // climbs into the story card.
-        setAlerts((prev) =>
-          prev[0] && prev[0].merchant === ev.merchant && prev[0].city === ev.city
-            ? prev
-            : [
-                {
-                  id: ev.id,
-                  merchant: ev.merchant,
-                  city: ev.city,
-                  score: ev.score,
-                  explanation: ev.explanation,
-                },
-                ...prev,
-              ].slice(0, 5),
-        );
-        enqueueStory(ev);
-      }
+      if (ev.alerted) enqueueStory(ev);
     });
 
     es.addEventListener("stats", (e) => {
@@ -225,43 +290,7 @@ export default function Wall() {
     });
 
     return () => es.close();
-    // enqueueStory closes only over refs/setters, stable for the connection's life.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Coalesce an alerted event into the playing story or the queue, else start a
-  // new story. Same customer within COALESCE_MS is one attack.
-  function enqueueStory(ev: WallEvent): void {
-    const now = performance.now();
-    const playing = playingRef.current;
-    if (playing && playing.tenant_id === ev.tenant_id && now - playing.lastAt < COALESCE_MS) {
-      playing.events.push(ev);
-      playing.lastAt = now;
-      // Widen the camera to keep the new location in frame.
-      setCamTarget(fitCameraForStory(playing));
-      force();
-      return;
-    }
-    const queued = queueRef.current.find(
-      (s) => s.tenant_id === ev.tenant_id && now - s.lastAt < COALESCE_MS,
-    );
-    if (queued) {
-      queued.events.push(ev);
-      queued.lastAt = now;
-      return;
-    }
-    const story: Story = {
-      id: String(ev.id),
-      tenant_id: ev.tenant_id,
-      events: [ev],
-      home: { city: ev.home_city, lat: ev.home_lat, lon: ev.home_lon },
-      lastAt: now,
-      played: false,
-    };
-    queueRef.current.push(story);
-    // Drop the oldest unplayed story past the cap.
-    if (queueRef.current.length > QUEUE_CAP) queueRef.current.shift();
-  }
 
   function fitCameraForStory(story: Story): Camera {
     const w = window.innerWidth;
@@ -273,29 +302,89 @@ export default function Wall() {
     return fitCamera(pts, w, h);
   }
 
-  // --- Story player (phase timers, off the render path) -------------------
+  // Pin a story on the wall (manual click). Taking the wheel switches to manual
+  // so a booth person's click is predictable, and marks the story played so a
+  // later switch to auto does not replay it.
+  function pinStory(id: string): void {
+    setAutoPersist(false);
+    setPlayingId(id);
+    setStories((prev) => prev.map((s) => (s.id === id ? { ...s, played: true } : s)));
+  }
+
+  // The × on the story card: back to the world view.
+  function closeStory(): void {
+    setPlayingId(null);
+  }
+
+  // Persist the pacing toggle so a booth setup survives reloads. Called only from
+  // client event handlers, where localStorage is defined (SSR-safe).
+  function setAutoPersist(next: boolean): void {
+    setAuto(next);
+    localStorage.setItem(AUTO_KEY, String(next));
+  }
+
+  // Load the persisted pacing toggle once on mount. Deferred to an effect (not a
+  // useState initializer) so the server and first client render agree on `false`
+  // and hydration stays stable; the stored value applies right after mount.
+  useEffect(() => {
+    const saved = localStorage.getItem(AUTO_KEY);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (saved !== null) setAuto(saved === "true");
+  }, []);
+
+  // --- Auto-play (attract loop, off the render path) ----------------------
+  // Manual mode leaves this idle: stories accumulate and the viewer clicks
+  // through. Auto plays the newest unplayed story, holds HOLD_MS, then eases back
+  // to the world before the next.
   useEffect(() => {
     const t = setInterval(() => {
+      if (!autoRef.current) return;
       const now = performance.now();
-      if (phaseRef.current === "attract") {
-        const next = queueRef.current.shift();
+      if (playingIdRef.current === null) {
+        const next = storiesRef.current.find((s) => !s.played);
         if (next) {
-          next.played = true;
-          playingRef.current = next;
-          phaseRef.current = "playing";
+          setStories((prev) => prev.map((s) => (s.id === next.id ? { ...s, played: true } : s)));
+          setPlayingId(next.id);
+          playingIdRef.current = next.id; // sync now so the next tick sees it before the render commits
           playStartRef.current = now;
-          setCamTarget(fitCameraForStory(next));
-          force();
         }
       } else if (now - playStartRef.current >= HOLD_MS) {
-        phaseRef.current = "attract";
-        playingRef.current = null;
-        setCamTarget(worldCamera(window.innerWidth, window.innerHeight));
-        force();
+        setPlayingId(null);
       }
     }, 150);
     return () => clearInterval(t);
   }, []);
+
+  // The pinned story object, recomputed from state each render. Its identity and
+  // events[0] stay stable across coalescing appends, which the panel memo relies on.
+  const playingStory = playingId
+    ? stories.find((s) => s.id === playingId) ?? null
+    : null;
+  const playingEventCount = playingStory?.events.length ?? 0;
+
+  // Mirror state into refs so the rAF loop and the auto-play timer, which run
+  // outside render, read current values. Synced in an effect (not during render)
+  // to keep the ref a render-free channel.
+  useEffect(() => {
+    storiesRef.current = stories;
+    playingIdRef.current = playingId;
+    autoRef.current = auto;
+    playingStoryRef.current = playingStory;
+  });
+
+  // Drive the camera: fit a pinned story (and widen as its burst grows), or ease
+  // back to the world view when nothing is pinned.
+  useEffect(() => {
+    if (playingStory) setCamTarget(fitCameraForStory(playingStory));
+    else setCamTarget(worldCamera(window.innerWidth, window.innerHeight));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingId, playingEventCount]);
+
+  // Reset the arc/hold timer when a story pins (manual clicks land here; the
+  // auto-play timer sets its own start when it begins a story).
+  useEffect(() => {
+    if (playingId !== null) playStartRef.current = performance.now();
+  }, [playingId]);
 
   // --- Ticker metrics (recomputed ~2 Hz, off the render path) -------------
   useEffect(() => {
@@ -338,7 +427,7 @@ export default function Wall() {
       lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       landKey = ""; // force a land rebuild
       // Recenter the world when the viewport changes and no story is playing.
-      if (phaseRef.current === "attract") {
+      if (playingStoryRef.current === null) {
         const world = worldCamera(w, h);
         camRef.current = world;
         camFromRef.current = world;
@@ -394,10 +483,10 @@ export default function Wall() {
       ctx.drawImage(land, 0, 0, w, h);
 
       // Geo-hop arc, while a story with an away-leg is playing.
-      const story = playingRef.current;
+      const story = playingStoryRef.current;
       if (story) {
         const away = awayEvent(story);
-        if (away) drawArc(ctx, story, away, cam, w, h, now);
+        if (away) drawArc(ctx, story, away, cam, w, h, now, playStartRef.current);
       }
 
       // Live pings on top.
@@ -439,58 +528,6 @@ export default function Wall() {
     };
   }, []);
 
-  // A glowing quadratic arc from home to the away city, drawn progressively, with
-  // the great-circle distance labeled at its apex.
-  function drawArc(
-    ctx: CanvasRenderingContext2D,
-    story: Story,
-    away: WallEvent,
-    cam: Camera,
-    w: number,
-    h: number,
-    now: number,
-  ): void {
-    const [hx, hy] = project(story.home.lon, story.home.lat, cam, w, h);
-    const [ex, ey] = project(away.lon, away.lat, cam, w, h);
-    const cx = (hx + ex) / 2;
-    const cy = (hy + ey) / 2 - Math.min(200, Math.hypot(ex - hx, ey - hy) * 0.4 + 40);
-
-    const p = ease((now - playStartRef.current) / 1200);
-    ctx.strokeStyle = "rgba(239, 68, 68, 0.85)";
-    ctx.lineWidth = 2;
-    ctx.shadowColor = "rgba(239, 68, 68, 0.7)";
-    ctx.shadowBlur = 12;
-    ctx.beginPath();
-    ctx.moveTo(hx, hy);
-    const steps = 40;
-    let headX = hx;
-    let headY = hy;
-    for (let i = 1; i <= steps; i++) {
-      const u = (i / steps) * p;
-      const x = (1 - u) * (1 - u) * hx + 2 * (1 - u) * u * cx + u * u * ex;
-      const y = (1 - u) * (1 - u) * hy + 2 * (1 - u) * u * cy + u * u * ey;
-      ctx.lineTo(x, y);
-      headX = x;
-      headY = y;
-    }
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // A bright head that travels the arc as it draws.
-    ctx.beginPath();
-    ctx.arc(headX, headY, 4, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(254, 202, 202, 1)";
-    ctx.fill();
-
-    // Distance label at the apex.
-    const km = haversineKm(story.home.lat, story.home.lon, away.lat, away.lon);
-    ctx.fillStyle = "rgba(248, 250, 252, 0.9)";
-    ctx.font = "600 13px ui-sans-serif, system-ui, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText(`${Math.round(km).toLocaleString("en-US")} km`, cx, cy - 8);
-    ctx.textAlign = "start";
-  }
-
   // Click a live alert ping to open its evidence panel.
   function onCanvasClick(e: React.MouseEvent<HTMLCanvasElement>) {
     const w = window.innerWidth;
@@ -518,7 +555,7 @@ export default function Wall() {
     conn === "live" ? "Live" : conn === "reconnecting" ? "Reconnecting" : "Connecting";
   const connColor = conn === "live" ? "#22c55e" : "#f59e0b";
 
-  const story = playingRef.current;
+  const story = playingStory;
   const subjectEvent = story?.events[0];
   // Memoized on the story's first event, whose identity never changes for the
   // story's life. Wall re-renders every 500ms (ticker); a fresh subject object
@@ -552,21 +589,39 @@ export default function Wall() {
           story && panelSubject ? "lg:pr-[calc(32%+1.5rem)]" : ""
         }`}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element -- static 2KB SVG, no optimizer needed */}
           <img
             src="/qdrant-fraud-detection-mark.svg"
             alt="Fraud Detection by Qdrant"
-            className="h-11 w-11"
+            className="h-11 w-11 shrink-0"
           />
-          <div>
+          <div className="min-w-0">
             <h1 className="text-lg font-semibold tracking-tight">Fraud Detection</h1>
-            <p className="text-xs text-slate-400">
+            <p className="truncate text-xs text-slate-400">
               One Qdrant Collection, 200 Customer Baselines, Scored As Events Land
             </p>
           </div>
+          <Link
+            href="/launch"
+            className="pointer-events-auto ml-2 shrink-0 whitespace-nowrap rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/20"
+          >
+            Launch An Attack
+          </Link>
         </div>
-        <div className="flex items-center gap-6 font-mono text-sm text-slate-300">
+        <div className="flex shrink-0 items-center gap-4 font-mono text-sm text-slate-300">
+          <button
+            onClick={() => setAutoPersist(!auto)}
+            aria-pressed={auto}
+            className={
+              "pointer-events-auto whitespace-nowrap rounded-lg border px-4 py-2 text-sm font-semibold transition-colors " +
+              (auto
+                ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                : "border-slate-600/60 bg-slate-800/40 text-slate-300 hover:bg-slate-700/50")
+            }
+          >
+            Auto Play {auto ? "On" : "Off"}
+          </button>
           <Metric label="Events / Sec" value={eps.toFixed(1)} />
           <Metric label="p95 Score" value={`${Math.round(p95)} ms`} />
           <Metric
@@ -584,7 +639,7 @@ export default function Wall() {
       </div>
 
       {/* Story card */}
-      {story ? <StoryCard story={story} /> : null}
+      {story ? <StoryCard story={story} onClose={closeStory} /> : null}
 
       {/* Teaching panel, right third on desktop / bottom sheet on small screens */}
       {story && panelSubject ? (
@@ -597,33 +652,48 @@ export default function Wall() {
         </aside>
       ) : null}
 
-      {/* Recent alerts, newest on top */}
-      <div className="absolute bottom-6 left-6 z-10 flex w-[26rem] max-w-[80vw] flex-col gap-2">
-        {alerts.map((a) => (
-          <button
-            key={String(a.id)}
-            onClick={() => router.push(`/alert/${a.id}`)}
-            className="group rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-left transition-colors hover:bg-red-500/20"
-          >
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="font-mono text-sm font-semibold text-red-400">
-                {a.score.toFixed(1)}x
-              </span>
-              <span className="truncate text-xs text-slate-400">
-                {a.merchant}, {a.city}
-              </span>
-            </div>
-            <p className="mt-0.5 text-xs leading-snug text-slate-200">{a.explanation}</p>
-          </button>
-        ))}
+      {/* Story queue, newest on top. Click an entry to pin its story on the wall
+          and browse at your own pace. Scrolls so it never climbs into the card. */}
+      <div className="absolute bottom-6 left-6 z-10 flex max-h-[calc(100vh-15rem)] w-[26rem] max-w-[80vw] flex-col gap-2 overflow-y-auto">
+        {stories.map((s) => {
+          const lead = s.events[0];
+          const top = s.events.reduce((m, e) => (e.score > m.score ? e : m), s.events[0]);
+          const active = s.id === playingId;
+          return (
+            <button
+              key={s.id}
+              onClick={() => pinStory(s.id)}
+              aria-pressed={active}
+              className={
+                "shrink-0 rounded-lg border px-3 py-2 text-left transition-colors " +
+                (active
+                  ? "border-red-500/70 bg-red-500/25 ring-1 ring-red-500/60"
+                  : "border-red-500/30 bg-red-500/10 hover:bg-red-500/20")
+              }
+            >
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="font-mono text-sm font-semibold text-red-400">
+                  {top.score.toFixed(1)}x
+                </span>
+                <span className="truncate text-xs text-slate-400">
+                  {top.merchant}, {top.city}
+                </span>
+              </div>
+              <p className="mt-0.5 truncate text-xs leading-snug text-slate-200">
+                {lead.explanation}
+              </p>
+            </button>
+          );
+        })}
       </div>
     </main>
   );
 }
 
 // The booth-legible story card: the one-liner, who and where, the amount trail,
-// and the score against the threshold.
-function StoryCard({ story }: { story: Story }) {
+// and the score against the threshold. The card stays pointer-transparent so
+// pings behind it stay clickable; only the × and the evidence link take clicks.
+function StoryCard({ story, onClose }: { story: Story; onClose: () => void }) {
   const lead = story.events[0];
   const top = story.events.reduce((m, e) => (e.score > m.score ? e : m), story.events[0]);
   const multi = story.events.length > 1;
@@ -633,9 +703,18 @@ function StoryCard({ story }: { story: Story }) {
         <span className="rounded-full bg-red-500/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-red-400">
           Alert
         </span>
-        <span className="font-mono text-2xl font-semibold text-red-400">
-          {top.score.toFixed(1)}x
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-2xl font-semibold text-red-400">
+            {top.score.toFixed(1)}x
+          </span>
+          <button
+            onClick={onClose}
+            aria-label="Close And Return To World View"
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full border border-slate-600/60 text-slate-400 transition-colors hover:bg-slate-700/50 hover:text-slate-100"
+          >
+            &times;
+          </button>
+        </div>
       </div>
 
       <p className="mt-3 text-xl font-semibold leading-snug text-slate-50">
@@ -673,6 +752,13 @@ function StoryCard({ story }: { story: Story }) {
       <p className="mt-3 font-mono text-xs text-slate-500">
         Score {top.score.toFixed(2)}x, threshold {THRESHOLD.toFixed(1)}
       </p>
+
+      <Link
+        href={`/alert/${top.id}`}
+        className="pointer-events-auto mt-4 inline-block rounded-lg bg-red-500/15 px-4 py-2 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25"
+      >
+        View Full Evidence
+      </Link>
     </div>
   );
 }
