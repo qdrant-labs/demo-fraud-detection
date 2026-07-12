@@ -7,6 +7,8 @@
 
 # Qdrant Fraud Detection: Per-Customer Anomaly Scoring in One Collection
 
+**[Live demo →](https://demo-fraud-detection-eta.vercel.app)**
+
 A live fraud-wall demo for a fictional card network. Synthetic transactions appear on a world map at their real coordinates. Fraud lights up within about a second, and every alert opens an evidence panel that shows how Qdrant caught it in vector space.
 
 ![The wall: a geo-hop alert arcing from Madrid to Sydney, with the alert queue and the evidence panel](public/qdrant-fraud-detection-wall.png)
