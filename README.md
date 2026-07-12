@@ -5,26 +5,28 @@
   </picture>
 </p>
 
-A live payments wall for a fictional card network. Synthetic transactions ping on a dark world map at their real coordinates, fraud ignites red within a second or two of launch (sub-second on a deployment pinned next to the cluster), and every alert plays out as a story: the camera zooms to the customer, a plain-language reason built from the retrieved neighbors appears in type you can read across a room, and a side panel replays the same event in vector space. "Normal" is defined per customer, and per-customer baselines are expensive to run elsewhere: per-namespace pricing, table partitioning, or a separate index per customer. This demo keeps 200 customer baselines in one [Qdrant](https://qdrant.tech) collection, isolates each customer with a tenant-keyed payload index, and scores every new event against that customer's own history the moment it lands. Qdrant is a vector search engine, and here it is the only backend: no queue, no cache, no relational store.
+A live payments wall for a fictional card network. Synthetic transactions ping on a dark world map at their real coordinates, fraud ignites red within a second or two of launch (sub-second on a deployment pinned next to the cluster), and every alert plays out as a story: the camera zooms to the customer, and one panel tells the rest in plain language: what happened, how the alert was caught in vector space, and how many milliseconds it took. "Normal" is defined per customer, and per-customer baselines are expensive to run elsewhere: per-namespace pricing, table partitioning, or a separate index per customer. This demo keeps 200 customer baselines in one [Qdrant](https://qdrant.tech) collection, isolates each customer with a tenant-keyed payload index, and scores every new event against that customer's own history the moment it lands. Qdrant is a vector search engine, and here it is the only backend: no queue, no cache, no relational store.
 
 ## What You See
 
-The wall (`/`) is a dark, full-screen world map. Each transaction pings at its city the moment it scores, and traffic follows daylight around the globe because every customer transacts in their home city's waking hours. When an event alerts, the camera zooms to fit the customer's home and the event locations, a story card shows the one-line reason with the amounts, and an impossible-travel alert draws a glowing arc between the two cities labeled with the distance in km. Alerts from one customer within 20 seconds coalesce into a single story, so a six-charge burst reads as one attack. A ticker shows events per second, p95 score latency, and total points, live.
+The wall (`/`) is a dark, full-screen world map. Each transaction pings at its city the moment it scores, and traffic follows daylight around the globe because every customer transacts in their home city's waking hours. Drag to pan. When an event alerts, the camera zooms to fit the customer's home and the event locations in the visible map area, and an impossible-travel alert draws a glowing arc between the two cities labeled with the distance in km. Alerts from one customer within 20 seconds coalesce into a single story, so a six-charge burst reads as one attack. A ticker shows events per second, p95 score latency, and total points, live.
 
-Beside each story, the How Qdrant Sees It panel replays the alert in vector space: the customer's baseline scatter fades in (2-D PCA of their 31-d vectors, computed in the browser), the event drops in red, its 10 pinned neighbors light up amber, and d_event, d_local, and their ratio count up against the 2.0 threshold. The map shows where the fraud happened; this panel shows why the search flagged it.
+A pinned story opens one panel that reads top to bottom: the plain-language reason and the charge trail, then How This Alert Was Caught in three steps (every transaction becomes 31 numbers; Qdrant finds the 10 most similar past transactions in this customer's own history; the distance ratio past 2.0 decides), with the animated vector-space scatter between the steps: the baseline cloud fades in (2-D PCA computed in the browser), the event drops in red, the 10 pinned neighbors light up amber, and the arithmetic counts up. A closing section, Caught In N ms, breaks the speed into history lookup, similarity search, and saving the event. The map shows where the fraud happened; the panel shows why the search flagged it and how fast.
 
 Alerts collect in a queue at the lower left, one entry per attack. By default nothing plays on its own: click an entry to pin its story, study it as long as you want, and close it with the × when done. The Auto Play toggle switches to a self-running loop that plays each new story for about seven seconds, which is the mode for a booth wall; the setting survives reloads.
 
+Launch An Attack opens a drawer on the wall itself: you get a pre-seeded persona, tap one of three attack cards (Geo-Hop, Card Testing Burst, or Amount Ladder), watch the per-event scores stream in, and see the flare land on the map behind the drawer. The whole demo works from one page.
+
 The evidence panel (`/alert/[id]`) opens when you click an alert. It shows the score arithmetic step by step, the ten nearest neighbors with their real distances, and the customer's baseline projected to 2-D with PCA computed in the browser. The score it displays is recomputed from the neighbor set pinned at scoring time, so it reproduces the original number exactly.
 
-The launch flow (`/launch`) is the hero moment. A visitor is assigned a pre-seeded persona ("You are Customer #4711, here is their normal life"), taps one of three attack cards (Geo-Hop, Card Testing Burst, or Amount Ladder), and watches the generated sequence flare on the wall. When no projected wall is open, the launch page opens a compact embedded wall strip so the demo still reads from a single browser tab.
+The standalone launch page (`/launch`) is the phone path for the booth hero moment: an audience member scans a QR code or opens a shared link, gets the same persona and attack cards, and watches the flare land on the projected wall. It renders the same launcher component as the wall's drawer, plus a compact embedded wall strip so the flow reads from a single phone screen.
 
 ### Demo Script
 
 1. Open the wall: events pinging around the world map, ticker live.
-2. Turn on Auto Play for a self-running wall, or click a story in the queue (one lands every 20 seconds or so): the camera zooms in, read the one-liner, and the side panel walks the audience from baseline cloud to neighbors to the division that produced the score.
-3. Click the alert for the full evidence panel: the neighbor list with real distances and the exact arithmetic, reproduced from the pinned neighbor set.
-4. Hero: share the launch link, let someone pick an attack card, and watch the flare land before the phone drops. Their phone then opens the evidence panel for the fraud they launched.
+2. Turn on Auto Play for a self-running wall, or click a story in the queue (one lands every 20 seconds or so): the camera zooms in, and the panel walks the audience from what happened, through the three steps of how it was caught, to the milliseconds it took.
+3. Click View Full Evidence for the deep page: the neighbor list with real distances and the exact arithmetic, reproduced from the pinned neighbor set.
+4. Hero: open the launch drawer on the wall, or share the launch link with a phone. Pick an attack card and the flare lands before the phone drops; the phone then opens the evidence panel for the fraud it launched.
 5. Mention: every event was searchable the instant it landed, in one collection, across 200 customers with one baseline each.
 
 ## Architecture
@@ -42,6 +44,7 @@ flowchart LR
   Q[("Qdrant Cloud<br/>fraud_demo collection")]
 
   W -- EventSource --> S
+  W -- "launch attack (drawer)" --> A
   L -- launch attack --> A
   S -- "generate, score, scroll for attacks" --> Q
   A -- "score, upsert" --> Q
@@ -61,6 +64,7 @@ Scored events would otherwise accumulate forever (each open wall adds 5 to 6 poi
 | `/api/stream` | GET | SSE loop: generates, scores, and relays browser attacks |
 | `/api/attack` | POST | Runs one attack sequence, streams per-event status as NDJSON |
 | `/api/baseline/[tenant]` | GET | A customer's baseline vectors for the scatter plot |
+| `/api/persona` | GET | Assigns a pre-seeded persona for the wall's launch drawer |
 
 ## How Scoring Works
 
