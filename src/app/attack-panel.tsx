@@ -229,7 +229,7 @@ export default function AttackPanel({
               <p className="text-sm text-slate-300">
                 {summary.alerted
                   ? "Your attack flared on the wall."
-                  : "Sequence scored. Watch the wall."}
+                  : "Scored, no alert. Watch the wall."}
               </p>
               {summary.alerted && onSeeEvidence ? (
                 <button

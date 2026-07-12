@@ -754,7 +754,7 @@ export default function Wall() {
             Auto Play {auto ? "On" : "Off"}
           </button>
           <Metric label="Events / Sec" value={eps.toFixed(1)} />
-          <Metric label="p95 Score" value={`${Math.round(p95)} ms`} />
+          <Metric label="p95 Latency" value={`${Math.round(p95)} ms`} />
           <Metric
             label="Total Points"
             value={points === null ? "-" : points.toLocaleString("en-US")}
@@ -1014,8 +1014,8 @@ function AlertPanel({
                 </table>
               </div>
               <p className="text-base text-slate-300">
-                Stored score {(evidence.stored.score ?? 0).toFixed(3)}; recomputed from the
-                pinned neighbors {evidence.recomputed.score.toFixed(3)}.
+                Stored score {(evidence.stored.score ?? 0).toFixed(3)}; recomputed from those
+                same neighbors {evidence.recomputed.score.toFixed(3)}.
               </p>
             </>
           ) : (

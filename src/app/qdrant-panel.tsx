@@ -220,8 +220,8 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
 
       <Step
         n={2}
-        title="Qdrant Finds Its 10 Nearest Neighbors"
-        body="In this customer's history only. Gray is their past, red this event, amber the 10 nearest."
+        title="Qdrant Finds The 10 Nearest Neighbors"
+        body="In this customer's history only. Gray is their past, red this transaction, amber the 10 nearest."
       />
 
       <canvas
@@ -233,7 +233,7 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
         <Cell label="Event To Neighbors" symbol="d_event" value={fmt(nums.dEvent, 3)} />
         <Cell label="Neighbor Spread" symbol="d_local" value={fmt(nums.dLocal, 3)} />
         <Cell
-          label="Ratio, Alerts Past 2.0"
+          label="Ratio, Alerts Above 2.0"
           value={`${fmt(nums.ratio, 2)}x`}
           highlight={nums.ratioDone && alert}
         />

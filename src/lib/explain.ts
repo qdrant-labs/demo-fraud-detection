@@ -129,8 +129,8 @@ export function explain(args: {
 
   if (top === "amount" || (recentHot && (recentDim === "ladder" || recentDim === "amountRatio"))) {
     const rises = f.rises >= 2 ? `, ${f.rises} rises in a row` : "";
-    return `Amount ${round1(f.amountRatio)}x this card's typical spend at ${tx.merchant}${rises}`;
+    return `Amount ${round1(f.amountRatio)}x this customer's typical spend at ${tx.merchant}${rises}`;
   }
 
-  return `${ratio}x farther from this card's baseline than its neighbors are from each other`;
+  return `${ratio}x farther from this customer's normal transactions than they are from each other`;
 }
