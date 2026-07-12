@@ -119,7 +119,8 @@ export function explain(args: {
 
   if (top === "geo" || (recentHot && recentDim === "impossibleTravel")) {
     const cp = tx.card_present ? "card-present" : "online";
-    return `First ${cp} charge outside ${profile.homeCity.name} in ${n} transactions; nearest normal neighbor is ${ratio}x closer to baseline`;
+    // The score badge and ratio cell already show the multiple; no second clause.
+    return `First ${cp} charge outside ${profile.homeCity.name} in ${n} transactions`;
   }
 
   if (recentHot && recentDim === "burstCount") {

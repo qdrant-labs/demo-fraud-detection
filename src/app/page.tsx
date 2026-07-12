@@ -84,6 +84,8 @@ const EPS_WINDOW_MS = 2000;
 
 const COALESCE_MS = 20_000; // same-customer alerts within this window = one story
 const STORY_CAP = 10; // stories kept in the rail, newest first; oldest is dropped
+const STORY_TTL_MS = 60_000; // unpinned queue entries fade out and drop after this
+const STORY_FADE_MS = 5_000; // fade duration at the end of the TTL
 const HOLD_MS = 7000; // auto mode: how long a story holds before easing back to world
 const CAM_MS = 800; // camera transition duration
 const AUTO_KEY = "wall-auto-play"; // localStorage flag for the pacing toggle
@@ -182,7 +184,7 @@ function drawArc(
   // Distance label at the apex.
   const km = haversineKm(story.home.lat, story.home.lon, away.lat, away.lon);
   ctx.fillStyle = "rgba(248, 250, 252, 0.9)";
-  ctx.font = "600 13px ui-sans-serif, system-ui, sans-serif";
+  ctx.font = "600 15px ui-sans-serif, system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(`${Math.round(km).toLocaleString("en-US")} km`, cx, cy - 8);
   ctx.textAlign = "start";
@@ -222,6 +224,8 @@ export default function Wall() {
   const [points, setPoints] = useState<number | null>(null);
   const [eps, setEps] = useState(0);
   const [p95, setP95] = useState(0);
+  // Ticker-driven clock for the queue's age-based fade (render-safe time source).
+  const [tick, setTick] = useState(0);
 
   // Pointer-drag panning. `down` tracks the active drag; `moved` is the total
   // pixel travel, so an under-threshold release stays a click (ping hit-test).
@@ -429,6 +433,17 @@ export default function Wall() {
       setEps(eventTimesRef.current.length / (EPS_WINDOW_MS / 1000));
       const sorted = [...latencyRef.current].sort((a, b) => a - b);
       setP95(pct(sorted, 95));
+
+      // Expire old queue entries. The pinned story is exempt so a viewer who is
+      // studying one never has it yanked away; it expires after unpinning.
+      const now = performance.now();
+      setTick(now);
+      setStories((prev) => {
+        const next = prev.filter(
+          (s) => s.id === playingIdRef.current || now - s.lastAt < STORY_TTL_MS,
+        );
+        return next.length === prev.length ? prev : next;
+      });
     }, 500);
     return () => clearInterval(t);
   }, []);
@@ -491,7 +506,7 @@ export default function Wall() {
         lctx.fillStyle = "rgba(148, 163, 184, 0.5)"; // slate-400
         lctx.fill();
         lctx.fillStyle = "rgba(148, 163, 184, 0.7)";
-        lctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+        lctx.font = "12px ui-sans-serif, system-ui, sans-serif";
         lctx.fillText(c.name, px + 5, py + 3);
       }
     }
@@ -517,11 +532,32 @@ export default function Wall() {
       ctx.clearRect(0, 0, w, h);
       ctx.drawImage(land, 0, 0, w, h);
 
-      // Geo-hop arc, while a story with an away-leg is playing.
+      // Geo-hop arc + persistent story markers, while a story is playing. Live
+      // pings expire in seconds, so a story pinned from the queue later would
+      // otherwise zoom to an empty city; these markers live as long as the pin.
       const story = playingStoryRef.current;
       if (story) {
         const away = awayEvent(story);
         if (away) drawArc(ctx, story, away, cam, w, h, now, playStartRef.current);
+
+        const [hx, hy] = project(story.home.lon, story.home.lat, cam, w, h);
+        ctx.beginPath();
+        ctx.arc(hx, hy, 7, 0, Math.PI * 2);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(148, 163, 184, 0.9)";
+        ctx.stroke();
+
+        const pulse = 1 + 0.15 * Math.sin(now / 300);
+        ctx.fillStyle = "rgba(239, 68, 68, 0.95)";
+        ctx.shadowColor = "rgba(239, 68, 68, 0.9)";
+        for (const e of story.events) {
+          const [px, py] = project(e.lon, e.lat, cam, w, h);
+          ctx.beginPath();
+          ctx.arc(px, py, 6 * pulse, 0, Math.PI * 2);
+          ctx.shadowBlur = 18;
+          ctx.fill();
+        }
+        ctx.shadowBlur = 0;
       }
 
       // Live pings on top.
@@ -692,8 +728,8 @@ export default function Wall() {
             className="h-11 w-11 shrink-0"
           />
           <div className="min-w-0">
-            <h1 className="text-lg font-semibold tracking-tight">Fraud Detection</h1>
-            <p className="truncate text-xs text-slate-400">
+            <h1 className="text-xl font-semibold tracking-tight">Fraud Detection</h1>
+            <p className="truncate text-sm text-slate-400">
               One Qdrant Collection, 200 Customer Baselines, Scored As Events Land
             </p>
           </div>
@@ -704,7 +740,7 @@ export default function Wall() {
             Launch An Attack
           </button>
         </div>
-        <div className="flex shrink-0 items-center gap-4 font-mono text-sm text-slate-300">
+        <div className="flex shrink-0 items-center gap-4 font-mono text-base text-slate-300">
           <button
             onClick={() => setAutoPersist(!auto)}
             aria-pressed={auto}
@@ -764,27 +800,33 @@ export default function Wall() {
           const lead = s.events[0];
           const top = s.events.reduce((m, e) => (e.score > m.score ? e : m), s.events[0]);
           const active = s.id === playingId;
+          // Age-based fade over the last STORY_FADE_MS of the TTL. The 500ms
+          // ticker re-render steps the value; the CSS opacity transition smooths
+          // between steps, so the card fades continuously across the window.
+          const fadeAge = tick - s.lastAt - (STORY_TTL_MS - STORY_FADE_MS);
+          const opacity = active ? 1 : Math.max(0, Math.min(1, 1 - fadeAge / STORY_FADE_MS));
           return (
             <button
               key={s.id}
               onClick={() => pinStory(s.id)}
               aria-pressed={active}
+              style={{ opacity, transition: "opacity 500ms linear, background-color 150ms" }}
               className={
-                "shrink-0 rounded-lg border px-3 py-2 text-left transition-colors " +
+                "shrink-0 rounded-lg border px-3 py-2 text-left backdrop-blur " +
                 (active
-                  ? "border-red-500/70 bg-red-500/25 ring-1 ring-red-500/60"
-                  : "border-red-500/30 bg-red-500/10 hover:bg-red-500/20")
+                  ? "border-red-500/70 bg-red-950/95 ring-1 ring-red-500/60"
+                  : "border-red-500/40 bg-red-950/85 hover:bg-red-900/80")
               }
             >
               <div className="flex items-baseline justify-between gap-3">
-                <span className="font-mono text-sm font-semibold text-red-400">
+                <span className="font-mono text-base font-semibold text-red-400">
                   {top.score.toFixed(1)}x
                 </span>
-                <span className="truncate text-xs text-slate-400">
+                <span className="truncate text-sm text-slate-300">
                   {top.merchant}, {top.city}
                 </span>
               </div>
-              <p className="mt-0.5 truncate text-xs leading-snug text-slate-200">
+              <p className="mt-0.5 truncate text-sm leading-snug text-slate-100">
                 {lead.explanation}
               </p>
             </button>
@@ -879,17 +921,17 @@ function AlertPanel({
 
       {/* b. One-liner, who and where, charge trail */}
       <div>
-        <p className="text-xl font-semibold leading-snug text-slate-50">{lead.explanation}</p>
-        <p className="mt-2 text-sm text-slate-300">
+        <p className="text-2xl font-semibold leading-snug text-slate-50">{lead.explanation}</p>
+        <p className="mt-2 text-base text-slate-300">
           Customer {story.tenant_id}, home {story.home.city}
         </p>
 
         {multi ? (
           <div className="mt-3">
-            <p className="text-sm text-slate-300">
+            <p className="text-base text-slate-300">
               {story.events.length} Charges At {lead.merchant}
             </p>
-            <ul className="mt-1 space-y-0.5 font-mono text-sm text-slate-300">
+            <ul className="mt-1 space-y-0.5 font-mono text-base text-slate-300">
               {story.events.slice(0, 6).map((e) => (
                 <li key={String(e.id)} className="flex justify-between gap-4">
                   <span>
@@ -903,7 +945,7 @@ function AlertPanel({
             </ul>
           </div>
         ) : (
-          <p className="mt-3 font-mono text-sm text-slate-200">
+          <p className="mt-3 font-mono text-base text-slate-200">
             {lead.currency} {lead.amount.toLocaleString("en-US")} at {lead.merchant}, {lead.city}
           </p>
         )}
@@ -915,14 +957,14 @@ function AlertPanel({
       {/* d. Scoring timings (generator events only; pickups carry no timings) */}
       {timings ? (
         <section className="flex flex-col gap-2">
-          <h3 className="text-base font-semibold text-slate-100">
+          <h3 className="text-lg font-semibold text-slate-100">
             Caught In {Math.round(timings.total)} ms
           </h3>
           <TimingRow label="History Lookup" ms={timings.scroll} />
           <TimingRow label="Similarity Search" ms={timings.knn} />
           <TimingRow label="Saving The Event" ms={timings.upsert} />
-          <p className="mt-1 text-sm leading-snug text-slate-300">
-            The saved event was searchable immediately; the next transaction scores against it.
+          <p className="mt-1 text-base leading-snug text-slate-300">
+            Searchable immediately; the next charge scores against it.
           </p>
         </section>
       ) : null}
@@ -971,7 +1013,7 @@ function AlertPanel({
                   </tbody>
                 </table>
               </div>
-              <p className="text-sm text-slate-300">
+              <p className="text-base text-slate-300">
                 Stored score {(evidence.stored.score ?? 0).toFixed(3)}; recomputed from the
                 pinned neighbors {evidence.recomputed.score.toFixed(3)}.
               </p>
@@ -987,7 +1029,7 @@ function AlertPanel({
 
 function TimingRow({ label, ms }: { label: string; ms: number }) {
   return (
-    <div className="flex items-baseline justify-between border-b border-slate-800/70 pb-1 text-sm">
+    <div className="flex items-baseline justify-between border-b border-slate-800/70 pb-1 text-base">
       <span className="text-slate-300">{label}</span>
       <span className="font-mono tabular-nums text-slate-100">{Math.round(ms)} ms</span>
     </div>
@@ -1047,7 +1089,7 @@ function LauncherDrawer({
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col items-end leading-tight">
-      <span className="text-[0.65rem] uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="text-xs uppercase tracking-wide text-slate-500">{label}</span>
       <span className="tabular-nums text-slate-100">{value}</span>
     </div>
   );

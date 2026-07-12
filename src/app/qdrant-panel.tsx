@@ -210,18 +210,18 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
 
   return (
     <section className="flex flex-col gap-4">
-      <h3 className="text-base font-semibold text-slate-100">How This Alert Was Caught</h3>
+      <h3 className="text-lg font-semibold text-slate-100">How This Alert Was Caught</h3>
 
       <Step
         n={1}
-        title="Every Transaction Becomes 31 Numbers"
-        body="Amount, time, place, and merchant type. Similar behavior lands close together; unusual behavior lands far away."
+        title="Every Transaction Becomes a Vector"
+        body="Amount, time, place, and merchant type, encoded in 31 dimensions. Similar behavior lands close together in vector space."
       />
 
       <Step
         n={2}
-        title="Qdrant Finds the 10 Most Similar Past Transactions"
-        body="Searched against this customer's history only. Gray dots are their past transactions, red is this event, amber are the 10 nearest."
+        title="Qdrant Finds Its 10 Nearest Neighbors"
+        body="In this customer's history only. Gray is their past, red this event, amber the 10 nearest."
       />
 
       <canvas
@@ -239,17 +239,12 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
         />
       </div>
 
-      <Step
-        n={3}
-        title="The Distance Ratio Decides"
-        body={`This event sits ${fmt(finalRatio, 1)}x farther from its neighbors than they sit from each other. Past 2.0 is an alert.`}
-      />
     </section>
   );
 }
 
-// One numbered teaching step. Body text is text-sm/slate-300 (the panel's
-// legibility floor) so nothing here reads as fine print.
+// One numbered teaching step. Body text is text-base/slate-300 (the panel's
+// legibility floor, sized for booth distance) so nothing here reads as fine print.
 function Step({ n, title, body }: { n: number; title: string; body: string }) {
   return (
     <div className="flex gap-3">
@@ -257,8 +252,8 @@ function Step({ n, title, body }: { n: number; title: string; body: string }) {
         {n}
       </span>
       <div>
-        <p className="text-sm font-semibold text-slate-100">{title}</p>
-        <p className="mt-1 text-sm leading-snug text-slate-300">{body}</p>
+        <p className="text-base font-semibold text-slate-100">{title}</p>
+        <p className="mt-1 text-base leading-snug text-slate-300">{body}</p>
       </div>
     </div>
   );
@@ -281,7 +276,7 @@ function Cell({
       {symbol ? <div className="font-mono text-xs text-slate-500">{symbol}</div> : null}
       <div
         className={
-          "mt-1 font-mono text-xl tabular-nums " + (highlight ? "text-red-400" : "text-slate-100")
+          "mt-1 font-mono text-2xl tabular-nums " + (highlight ? "text-red-400" : "text-slate-100")
         }
       >
         {value}
