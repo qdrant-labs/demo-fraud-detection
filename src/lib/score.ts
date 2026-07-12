@@ -161,6 +161,7 @@ function priorFromPayload(payload: Record<string, unknown> | null | undefined): 
     merchant: String(p.merchant),
     lat: Number(p.lat),
     lon: Number(p.lon),
+    city: String(p.city),
   };
 }
 
@@ -290,7 +291,6 @@ export async function scoreEvent(
         centroid,
         context: priors,
         profile,
-        score,
       });
 
   // (3) UPSERT the scored event so it is immediately searchable — no refresh

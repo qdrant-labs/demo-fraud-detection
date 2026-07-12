@@ -3,8 +3,8 @@
 // deviates most between the event vector and its neighbor centroid, then fills
 // the sentence with facts recomputed from the tenant's real recent history.
 //
-// shortcut: a four-template library keyed on the top deviating block
-// (geo/impossible-travel, burst, amount/ladder, generic fallback). Extend the
+// shortcut: a five-template library keyed on the top deviating block
+// (impossible-travel, geo, burst, amount/ladder, generic fallback). Extend the
 // library if new motifs need finer wording; the block-deviation ranking already
 // generalizes, only the sentences are fixed.
 
@@ -66,8 +66,12 @@ function facts(tx: Transaction, context: PriorTx[]) {
 
   const last = prior[prior.length - 1];
   let kmh = 0;
+  let travelMinutes = 0;
+  const prevCity = last?.city;
   if (last) {
-    const hours = (nowMs - Date.parse(last.ts)) / 3_600_000;
+    const ms = nowMs - Date.parse(last.ts);
+    travelMinutes = Math.max(1, Math.round(ms / 60_000));
+    const hours = ms / 3_600_000;
     if (hours > 0) kmh = haversineKm(last.lat, last.lon, tx.lat, tx.lon) / hours;
   }
 
@@ -88,7 +92,7 @@ function facts(tx: Transaction, context: PriorTx[]) {
     } else break;
   }
 
-  return { prior, burstCount, burstMinutes, kmh, amountRatio, ladderRatio, rises };
+  return { prior, burstCount, burstMinutes, kmh, travelMinutes, prevCity, amountRatio, ladderRatio, rises };
 }
 
 export function explain(args: {
@@ -97,11 +101,9 @@ export function explain(args: {
   centroid: number[];
   context: PriorTx[];
   profile: TenantProfile;
-  score: number;
 }): string {
-  const { tx, eventVector, centroid, context, profile, score } = args;
+  const { tx, eventVector, centroid, context, profile } = args;
   const f = facts(tx, context);
-  const ratio = round1(score);
   const n = f.prior.length;
 
   // Rank blocks by how far the event sits from the neighbor centroid.
@@ -116,8 +118,17 @@ export function explain(args: {
     .sort((a, b) => b.dev - a.dev)[0].name;
 
   const recentHot = top === "recent";
+  const impossibleTravel = recentHot && recentDim === "impossibleTravel";
 
-  if (top === "geo" || (recentHot && recentDim === "impossibleTravel")) {
+  // Impossible travel gets its own line: the speed between the two charges is
+  // the whole story, so show it. Falls through to the geo line when there is no
+  // prior to measure against.
+  if (impossibleTravel && f.prevCity && f.kmh > 0) {
+    const kmh = Math.round(f.kmh).toLocaleString("en-US");
+    return `Charge in ${tx.city} ${f.travelMinutes} min after ${f.prevCity} — ${kmh} km/h apart`;
+  }
+
+  if (top === "geo" || impossibleTravel) {
     const cp = tx.card_present ? "card-present" : "online";
     // The score badge and ratio cell already show the multiple; no second clause.
     return `First ${cp} charge outside ${profile.homeCity.name} in ${n} transactions`;
@@ -132,5 +143,5 @@ export function explain(args: {
     return `Amount ${round1(f.amountRatio)}x this customer's typical spend at ${tx.merchant}${rises}`;
   }
 
-  return `${ratio}x farther from this customer's normal transactions than they are from each other`;
+  return `Unlike this customer's normal transactions in several ways at once`;
 }

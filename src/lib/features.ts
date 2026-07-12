@@ -53,7 +53,7 @@ export interface RecentHistory {
 // The payload fields recentHistory needs from each prior transaction.
 export type PriorTx = Pick<
   Transaction,
-  "ts" | "amount" | "merchant" | "lat" | "lon"
+  "ts" | "amount" | "merchant" | "lat" | "lon" | "city"
 >;
 
 // Everything the encoder needs beyond the transaction itself. The scorer

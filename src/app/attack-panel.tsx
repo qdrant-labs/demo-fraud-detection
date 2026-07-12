@@ -21,7 +21,7 @@ interface Card {
 const CARDS: Card[] = [
   {
     motif: "geo_hop",
-    title: "Geo-Hop",
+    title: "Impossible Travel",
     blurb:
       "Two card-present charges in cities minutes apart, faster than any flight.",
   },
