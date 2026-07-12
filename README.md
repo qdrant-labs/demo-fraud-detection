@@ -5,122 +5,67 @@
   </picture>
 </p>
 
-# Qdrant Fraud Detection: Per-Customer Anomaly Scoring in One Collection
+# Qdrant Fraud Detection
 
-**[Live demo →](https://demo-fraud-detection-eta.vercel.app)**
-
-A live fraud-wall demo for a fictional card network. Synthetic transactions appear on a world map at their real coordinates. Fraud lights up within about a second, and every alert opens an evidence panel that shows how Qdrant caught it in vector space.
+**[Live demo](https://demo-fraud-detection-eta.vercel.app)**
 
 ![The wall: a geo-hop alert arcing from Madrid to Sydney, with the alert queue and the evidence panel](public/qdrant-fraud-detection-wall.png)
 
-The demo keeps 200 customer baselines, or 109,446 points, in one [Qdrant](https://qdrant.tech) collection. Each new transaction becomes a 31-dimensional vector, searches only that customer's history, and alerts when its local distance ratio passes `2.0`.
+## What It Is
 
-Qdrant is the only backend:
+A real-time fraud detection demo for payment transactions. It stores 200 customer baselines, or 109,446 points, in one [Qdrant](https://qdrant.tech) collection and scores each new transaction against that customer's own history.
 
-- One collection for every customer baseline
-- Tenant-keyed payload indexes for customer isolation
-- k-nearest neighbor search for anomaly scoring
-- Formula queries for recency-aware ranking
-- Immediate upserts so bursts score against fresh events
-- Timestamp-filtered scrolls instead of a queue
+Each transaction becomes a 31-dimensional vector. Qdrant searches the nearest historical transactions for the same customer, computes an anomaly score, and stores the evidence behind the alert: nearest neighbors, distances, score, and timing.
 
-## The Wall
+The demo detects three synthetic fraud patterns:
 
-Open `/` and the traffic follows daylight around the globe. Alerts collect in a queue. Select an alert to zoom to the customer, draw a distance-labeled arc between cities, and see the score breakdown.
+- Geo-Hop: the card moves between distant cities too quickly.
+- Card Testing Burst: many small attempts arrive in a short window.
+- Amount Ladder: transaction amounts climb in a pattern unlike the customer baseline.
 
-The evidence panel shows:
+## Who It's For
 
-- The transaction's 31-dimensional feature vector
-- The 10 nearest neighbors from that customer's own history
-- The local distance ratio that triggered the alert
-- A 2-D principal component analysis scatter of the customer's baseline
-- The milliseconds spent in each Qdrant call
+This demo is relevant to:
 
-For booth demos, enable Auto Play for a self-running wall or share the URL to a phone. Launch An Attack opens three scenarios: Geo-Hop, Card Testing Burst, and Amount Ladder. Each attack lands on the map within a second or two. See The Evidence pins the story, including the 10 neighbors and the arithmetic that reproduces the stored score.
+- Fraud, risk, and payments teams evaluating per-customer anomaly detection.
+- Data and machine learning teams that need explainable retrieval around model decisions.
+- Platform teams that want one indexed collection for many customer baselines instead of one index, table, or namespace per customer.
+- Engineers building streaming pipelines where new events must be searchable immediately.
 
-## How It Works
+## How It's Built
 
-Every transaction is scored against the customer's own baseline:
+The scoring path is intentionally small:
 
-1. Scroll the customer's 30 most recent points, ordered by the indexed `ts` field.
-2. Search for the 10 nearest historical neighbors inside the same `tenant_id`.
-3. Re-rank those neighbors with a recency-aware formula query.
-4. Compute `d_event / d_local`, a self-normalizing k-nearest neighbor ratio.
-5. Alert when the ratio exceeds `2.0`.
+1. Encode the transaction into a vector from amount, merchant, time, location, and recent customer behavior.
+2. Store all customers in one Qdrant collection with an indexed customer ID.
+3. For each new transaction, filter to that customer and retrieve similar historical transactions.
+4. Compare the transaction's distance to its neighbors against the neighbors' own spread.
+5. Alert when the ratio passes `2.0`.
 6. Upsert the scored event with `wait: true`, so the next event can search against it.
 
-The feature vector comes from a pure function, not a learned model. That keeps the evidence panel explainable: the stored neighbor IDs, distances, and score can reproduce the exact decision later, even after newer points arrive.
+The evidence panel is explainable because the alert stores the neighbor IDs, distances, and score math at scoring time. The anomaly score answers, "Is this unlike this customer's history?" The fraud label answers, "What changed?"
 
-The first 30 events for a new customer score but never alert, which gives each customer a learning window.
+The labels are exact because this is a controlled demo: each launched attack is generated from a known scenario, such as Geo-Hop or Card Testing Burst. Qdrant provides the similar historical transactions and stored evidence that explain why the event looked abnormal.
 
-## Explainability
+In production, the label would usually come from a trained model, business rules, analyst feedback, or a mix of the three.
 
-The anomaly score answers: "Is this unlike the customer's own history?" The fraud type answers: "What changed?"
+## Adapt It to Your Pipeline
 
-In this demo, the attack type comes from the launched scenario: Geo-Hop, Card Testing Burst, or Amount Ladder. The evidence panel then shows the signals behind that label, such as the distance between cities, repeated attempts, amount changes, nearest neighbors, and score math.
+To use the same pattern with real data:
 
-In a real system, the type would usually come from a trained model, business rules, analyst feedback, or a mix of all three. Qdrant provides the nearby historical transactions and stored evidence that make the alert easier to inspect.
+- Replace the synthetic stream with your transaction feed.
+- Train a model on your own transaction history and confirmed fraud cases.
+- Store model vectors, customer IDs, timestamps, and decision metadata in Qdrant.
+- Query with a customer filter so every score compares the event to that customer's own baseline.
+- Store similar historical transactions with each alert so analysts can inspect why it fired.
+- Calibrate thresholds, fraud labels, and learning windows with your own eval set.
 
-## Qdrant Query
+The main files to adapt are:
 
-The core detection step is one formula query over a tenant-filtered prefetch. The prefetch excludes the last hour, so a fraud burst cannot become its own nearest-neighbor cluster and hide itself.
-
-```json
-{
-  "prefetch": {
-    "query": "<event_vector>",
-    "using": "features",
-    "filter": {
-      "must": [
-        { "key": "tenant_id", "match": { "value": "<tenant_id>" } },
-        { "key": "ts", "range": { "lt": "<event_ts_minus_1h>" } }
-      ]
-    },
-    "limit": 100
-  },
-  "query": {
-    "formula": {
-      "sum": [
-        { "mult": [-1.0, "$score"] },
-        { "mult": [0.15, { "exp_decay": {
-          "x": { "datetime_key": "ts" },
-          "target": { "datetime": "<event_ts>" },
-          "scale": 2592000,
-          "midpoint": 0.5
-        } } ] }
-      ]
-    }
-  },
-  "with_vector": true,
-  "limit": 10
-}
-```
-
-The Euclid prefetch score sorts closest first, while formula queries sort larger scores first. The distance term is negated before it mixes with `exp_decay`; see the [search relevance docs](https://qdrant.tech/documentation/search/search-relevance/).
-
-## Qdrant Patterns
-
-- **Multitenancy:** The `tenant_id` keyword index uses `is_tenant: true`, so Qdrant co-locates each customer's vectors and keeps per-customer k-nearest neighbor search fast as the collection grows.
-- **Immediate Consistency:** Each scored event is upserted with `wait: true`, so the next event in a burst can search against it with no refresh cycle.
-- **Message Bus:** A phone-launched attack may score on a different serverless instance than the wall stream. The wall picks it up with a timestamp-filtered scroll on an indexed `channel_src` field.
-- **Bounded Growth:** Each stream connection deletes scored events older than 24 hours with a `must_not is_empty(score)` filter. Seeded baseline points carry no `score` field, so they survive. [`evals/janitor.ts`](evals/janitor.ts) checks this.
-
-Feature layout and weights live in [`src/lib/features.ts`](src/lib/features.ts). The tuning record lives in [`evals/TUNING.md`](evals/TUNING.md).
-
-## Measured Results
-
-Every number comes from scripts in [`evals/`](evals). Run them with `npm run evals`.
-
-| Eval | Result |
-|---|---|
-| Motif detection | Sequence recall 0.833, precision 0.754 at threshold 2.0 on the default seed; 0.950 and 0.833 on a held-out seed |
-| Latency | Per-event scoring p95 475 ms measured one region away, with about 100 ms RTT and three round trips per event; launch-to-wall flare 0.9-2.1 s |
-| Cold start | Pass: zero alerts inside a fresh customer's 30-event learning window |
-| Tenant isolation | Pass: scoring against the wrong customer's baseline shifts the score by 56.5% |
-| Determinism | Pass: two runs at the same world seed produce identical alert sets |
-| API contract | 5/5 pass, asserting on computed values, not status codes |
-
-Latency is dominated by round-trip time. Deploy the compute next to the Qdrant cluster if you want sub-second flare timing.
+- [`src/lib/features.ts`](src/lib/features.ts): vector encoding.
+- [`src/lib/score.ts`](src/lib/score.ts): scoring flow.
+- [`src/lib/qdrant.ts`](src/lib/qdrant.ts): collection schema and indexes.
+- [`evals/`](evals): latency, cold start, tenant isolation, and detection checks.
 
 ## Run It
 
@@ -139,11 +84,7 @@ npm run evals                 # runs the suite against throwaway collections
 
 ## Scope
 
-This demo shows the retrieval mechanics behind per-customer anomaly scoring on synthetic data. It is not a production fraud model.
-
-For production, most teams would train a model on their own transaction history and confirmed fraud cases. Qdrant would store the resulting vectors and metadata, then retrieve similar past behavior for fast scoring and evidence.
-
-The synthetic world separates fraud from normal traffic more cleanly than real payments. The threshold and features are tuned on this generator and validated on a held-out seed. The one-hour neighbor exclusion is sized to this demo's motif durations.
+This is a retrieval demo, not a production fraud model. The data is synthetic, the fraud patterns are controlled, and the threshold is tuned for this generator. A real implementation should use your own transaction history, confirmed fraud labels, and evaluation process.
 
 ---
 
