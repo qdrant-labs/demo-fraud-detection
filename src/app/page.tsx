@@ -18,13 +18,17 @@ import Link from "next/link";
 import { CITIES, haversineKm } from "@/lib/geo";
 import {
   fitCamera,
+  LAT_MAX,
+  LAT_MIN,
   lerpCamera,
   project,
   worldCamera,
   type Camera,
 } from "@/lib/mapview";
 import landDots from "@/lib/land-dots.json";
+import type { PersonaSummary } from "@/lib/world";
 import QdrantPanel, { type PanelSubject } from "./qdrant-panel";
+import AttackPanel from "./launch/attack-panel";
 
 interface WallEvent {
   id: string | number;
@@ -42,7 +46,9 @@ interface WallEvent {
   alerted: boolean;
   learning: boolean;
   explanation: string;
-  timings: { total: number } | null;
+  // Generator events carry the full per-stage timings; browser-attack pickups
+  // are replayed from payload, not rescored, so theirs is null.
+  timings: { scroll: number; knn: number; upsert: number; total: number } | null;
   // Alerted events only.
   vector?: number[];
   neighbor_ids?: (string | number)[];
@@ -84,8 +90,12 @@ const HOLD_MS = 7000; // auto mode: how long a story holds before easing back to
 const CAM_MS = 800; // camera transition duration
 const AUTO_KEY = "wall-auto-play"; // localStorage flag for the pacing toggle
 
-// Mirrors score.ts ALERT_THRESHOLD; display-only, the server sends each verdict.
-const THRESHOLD = 2.0;
+// The alert panel's desktop width. The Tailwind class (lg:w-[30rem]) and the
+// story-fit math both read this, so they cannot drift.
+// ponytail: 30rem in px assumes the 16px root font; move the class and this together.
+const PANEL_REM = 30;
+const PANEL_PX = PANEL_REM * 16;
+const LG_MIN = 1024; // Tailwind lg breakpoint; the panel is fixed-right at/above this
 
 const LAND = landDots.points as [number, number][];
 
@@ -216,6 +226,27 @@ export default function Wall() {
   const [eps, setEps] = useState(0);
   const [p95, setP95] = useState(0);
 
+  // Pointer-drag panning. `down` tracks the active drag; `moved` is the total
+  // pixel travel, so an under-threshold release stays a click (ping hit-test).
+  const dragRef = useRef<{ x: number; y: number; moved: number } | null>(null);
+  const [grabbing, setGrabbing] = useState(false);
+
+  // The inline attack launcher drawer. Persona is fetched from /api/persona when
+  // the drawer opens (and re-fetched by "New Persona"), matching /launch.
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [persona, setPersona] = useState<{ tenantId: string; persona: PersonaSummary } | null>(null);
+
+  async function loadPersona(): Promise<void> {
+    setPersona(null);
+    const r = await fetch("/api/persona");
+    setPersona(await r.json());
+  }
+
+  function openLauncher(): void {
+    setLauncherOpen(true);
+    if (!persona) void loadPersona();
+  }
+
   function setCamTarget(cam: Camera): void {
     camFromRef.current = camRef.current;
     camToRef.current = cam;
@@ -292,6 +323,10 @@ export default function Wall() {
     return () => es.close();
   }, []);
 
+  // Fit a story into the map area the panel does not cover. On desktop the panel
+  // owns the right PANEL_PX, so we fit into the remaining width and shift the
+  // camera east: with project x = dlon*s + w/2, centering the story at the
+  // visible middle (x = w_vis/2) needs cam.lon = storyCenterLon + panelPx/(2*s).
   function fitCameraForStory(story: Story): Camera {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -299,7 +334,10 @@ export default function Wall() {
       [story.home.lon, story.home.lat],
       ...story.events.map((e) => [e.lon, e.lat] as [number, number]),
     ];
-    return fitCamera(pts, w, h);
+    const panelPx = w >= LG_MIN ? PANEL_PX : 0;
+    const cam = fitCamera(pts, w - panelPx, h);
+    if (panelPx > 0) cam.lon += panelPx / (2 * cam.s);
+    return cam;
   }
 
   // Pin a story on the wall (manual click). Taking the wheel switches to manual
@@ -528,13 +566,11 @@ export default function Wall() {
     };
   }, []);
 
-  // Click a live alert ping to open its evidence panel.
-  function onCanvasClick(e: React.MouseEvent<HTMLCanvasElement>) {
+  // Hit-test a click against live alert pings; open the nearest one's evidence.
+  function hitTest(mx: number, my: number): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
     const cam = camRef.current;
-    const mx = e.clientX;
-    const my = e.clientY;
     let best: Ping | null = null;
     let bestD = 20 * 20;
     for (const p of pingsRef.current) {
@@ -549,6 +585,42 @@ export default function Wall() {
       }
     }
     if (best) router.push(`/alert/${best.id}`);
+  }
+
+  // Pointer-drag pans the camera; a release with under ~5px of travel is a click.
+  const DRAG_SLOP = 5;
+
+  function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = { x: e.clientX, y: e.clientY, moved: 0 };
+    setGrabbing(true);
+  }
+
+  function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    d.x = e.clientX;
+    d.y = e.clientY;
+    d.moved += Math.hypot(dx, dy);
+
+    // Convert pixel delta to degrees and pan the camera center. A user pan wins:
+    // collapse the in-flight transition onto the dragged camera so nothing eases
+    // back until the next pin/close or auto-play retarget.
+    const cam = camRef.current;
+    const lat = Math.max(LAT_MIN, Math.min(LAT_MAX, cam.lat + dy / cam.s));
+    const next: Camera = { lon: cam.lon - dx / cam.s, lat, s: cam.s };
+    camRef.current = next;
+    camFromRef.current = next;
+    camToRef.current = next;
+  }
+
+  function onPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
+    const d = dragRef.current;
+    dragRef.current = null;
+    setGrabbing(false);
+    if (d && d.moved < DRAG_SLOP) hitTest(e.clientX, e.clientY);
   }
 
   const connLabel =
@@ -578,15 +650,20 @@ export default function Wall() {
     <main className="relative h-screen w-screen overflow-hidden bg-[#07090d] text-slate-100">
       <canvas
         ref={canvasRef}
-        onClick={onCanvasClick}
-        className="absolute inset-0 h-full w-full"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        className={
+          "absolute inset-0 h-full w-full touch-none " +
+          (grabbing ? "cursor-grabbing" : "cursor-grab")
+        }
       />
 
       {/* Ticker. Shifts left of the teaching panel while a story plays, so the
           metrics stay visible instead of sliding under it. */}
       <div
         className={`pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between px-6 py-4 transition-[padding] duration-300 ${
-          story && panelSubject ? "lg:pr-[calc(32%+1.5rem)]" : ""
+          story && panelSubject ? "lg:pr-[calc(30rem+1.5rem)]" : ""
         }`}
       >
         <div className="flex min-w-0 items-center gap-3">
@@ -602,12 +679,12 @@ export default function Wall() {
               One Qdrant Collection, 200 Customer Baselines, Scored As Events Land
             </p>
           </div>
-          <Link
-            href="/launch"
+          <button
+            onClick={openLauncher}
             className="pointer-events-auto ml-2 shrink-0 whitespace-nowrap rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/20"
           >
             Launch An Attack
-          </Link>
+          </button>
         </div>
         <div className="flex shrink-0 items-center gap-4 font-mono text-sm text-slate-300">
           <button
@@ -638,18 +715,22 @@ export default function Wall() {
         </div>
       </div>
 
-      {/* Story card */}
-      {story ? <StoryCard story={story} onClose={closeStory} /> : null}
-
-      {/* Teaching panel, right third on desktop / bottom sheet on small screens */}
+      {/* One unified alert panel: score header, one-liner, charge trail, the
+          teaching section with the animated scatter, the timings, and the
+          evidence link. Fixed-right on desktop, bottom sheet on small screens.
+          Keyed on story.id so the scatter animation runs once per story. */}
       {story && panelSubject ? (
-        <aside
-          className="pointer-events-auto fixed z-20 overflow-y-auto border-slate-700/60 bg-[#0a0d12]/95 backdrop-blur
-            inset-x-0 bottom-0 max-h-[58vh] border-t p-4
-            lg:inset-y-0 lg:right-0 lg:left-auto lg:h-full lg:max-h-none lg:w-[32%] lg:border-l lg:border-t-0 lg:p-6"
-        >
-          <QdrantPanel key={story.id} subject={panelSubject} />
-        </aside>
+        <AlertPanel key={story.id} story={story} subject={panelSubject} onClose={closeStory} />
+      ) : null}
+
+      {/* Inline attack launcher drawer (left side / full modal on small screens).
+          The wall stays live behind it, so a launched attack flares here. */}
+      {launcherOpen ? (
+        <LauncherDrawer
+          persona={persona}
+          onNewPersona={loadPersona}
+          onClose={() => setLauncherOpen(false)}
+        />
       ) : null}
 
       {/* Story queue, newest on top. Click an entry to pin its story on the wall
@@ -690,76 +771,166 @@ export default function Wall() {
   );
 }
 
-// The booth-legible story card: the one-liner, who and where, the amount trail,
-// and the score against the threshold. The card stays pointer-transparent so
-// pings behind it stay clickable; only the × and the evidence link take clicks.
-function StoryCard({ story, onClose }: { story: Story; onClose: () => void }) {
+// The unified alert panel: everything about a pinned story in one right-side
+// column. Top to bottom: score header, the one-liner and charge trail, the
+// "How This Alert Was Caught" teaching section (animated scatter + arithmetic),
+// the scoring timings, and the evidence link. Fixed-right on desktop, bottom
+// sheet on small screens. Keyed by the caller on story.id, so it remounts (and
+// the scatter animation replays) once per story.
+function AlertPanel({
+  story,
+  subject,
+  onClose,
+}: {
+  story: Story;
+  subject: PanelSubject;
+  onClose: () => void;
+}) {
   const lead = story.events[0];
   const top = story.events.reduce((m, e) => (e.score > m.score ? e : m), story.events[0]);
   const multi = story.events.length > 1;
+  const timings = lead.timings;
+
   return (
-    <div className="pointer-events-none absolute left-6 top-24 z-10 w-[30rem] max-w-[calc(100vw-3rem)] rounded-2xl border border-red-500/30 bg-[#0a0d12]/85 p-5 backdrop-blur">
+    <aside
+      className="pointer-events-auto fixed z-20 flex flex-col gap-5 overflow-y-auto border-slate-700/60 bg-[#0a0d12]/95 backdrop-blur
+        inset-x-0 bottom-0 max-h-[58vh] border-t p-4
+        lg:inset-y-0 lg:right-0 lg:left-auto lg:h-full lg:max-h-none lg:w-[30rem] lg:border-l lg:border-t-0 lg:p-6"
+    >
+      {/* a. Score header */}
       <div className="flex items-center justify-between">
         <span className="rounded-full bg-red-500/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-red-400">
           Alert
         </span>
         <div className="flex items-center gap-3">
-          <span className="font-mono text-2xl font-semibold text-red-400">
+          <span className="font-mono text-3xl font-semibold text-red-400">
             {top.score.toFixed(1)}x
           </span>
           <button
             onClick={onClose}
             aria-label="Close And Return To World View"
-            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full border border-slate-600/60 text-slate-400 transition-colors hover:bg-slate-700/50 hover:text-slate-100"
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-600/60 text-slate-400 transition-colors hover:bg-slate-700/50 hover:text-slate-100"
           >
             &times;
           </button>
         </div>
       </div>
 
-      <p className="mt-3 text-xl font-semibold leading-snug text-slate-50">
-        {lead.explanation}
-      </p>
-
-      <p className="mt-3 text-sm text-slate-400">
-        Customer {story.tenant_id}, home {story.home.city}
-      </p>
-
-      {multi ? (
-        <div className="mt-3">
-          <p className="text-xs uppercase tracking-wide text-slate-500">
-            {story.events.length} Charges At {lead.merchant}
-          </p>
-          <ul className="mt-1 space-y-0.5 font-mono text-sm text-slate-300">
-            {story.events.slice(0, 6).map((e) => (
-              <li key={String(e.id)} className="flex justify-between gap-4">
-                <span>
-                  {e.currency} {e.amount.toLocaleString("en-US")}, {e.city}
-                </span>
-                <span className={e.alerted ? "text-red-400" : "text-slate-500"}>
-                  {e.score.toFixed(1)}x
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : (
-        <p className="mt-3 font-mono text-base text-slate-200">
-          {lead.currency} {lead.amount.toLocaleString("en-US")} at {lead.merchant}, {lead.city}
+      {/* b. One-liner, who and where, charge trail */}
+      <div>
+        <p className="text-xl font-semibold leading-snug text-slate-50">{lead.explanation}</p>
+        <p className="mt-2 text-sm text-slate-300">
+          Customer {story.tenant_id}, home {story.home.city}
         </p>
-      )}
 
-      <p className="mt-3 font-mono text-xs text-slate-500">
-        Score {top.score.toFixed(2)}x, threshold {THRESHOLD.toFixed(1)}
-      </p>
+        {multi ? (
+          <div className="mt-3">
+            <p className="text-sm text-slate-300">
+              {story.events.length} Charges At {lead.merchant}
+            </p>
+            <ul className="mt-1 space-y-0.5 font-mono text-sm text-slate-300">
+              {story.events.slice(0, 6).map((e) => (
+                <li key={String(e.id)} className="flex justify-between gap-4">
+                  <span>
+                    {e.currency} {e.amount.toLocaleString("en-US")}, {e.city}
+                  </span>
+                  <span className={e.alerted ? "text-red-400" : "text-slate-400"}>
+                    {e.score.toFixed(1)}x
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="mt-3 font-mono text-sm text-slate-200">
+            {lead.currency} {lead.amount.toLocaleString("en-US")} at {lead.merchant}, {lead.city}
+          </p>
+        )}
+      </div>
 
+      {/* c. How This Alert Was Caught (steps + animated scatter + arithmetic) */}
+      <QdrantPanel subject={subject} />
+
+      {/* d. Scoring timings (generator events only; pickups carry no timings) */}
+      {timings ? (
+        <section className="flex flex-col gap-2">
+          <h3 className="text-base font-semibold text-slate-100">
+            Caught In {Math.round(timings.total)} ms
+          </h3>
+          <TimingRow label="History Lookup" ms={timings.scroll} />
+          <TimingRow label="Similarity Search" ms={timings.knn} />
+          <TimingRow label="Saving The Event" ms={timings.upsert} />
+          <p className="mt-1 text-sm leading-snug text-slate-300">
+            The saved event was searchable immediately. The next transaction scores against it with
+            no delay.
+          </p>
+        </section>
+      ) : null}
+
+      {/* e. Evidence link */}
       <Link
         href={`/alert/${top.id}`}
-        className="pointer-events-auto mt-4 inline-block rounded-lg bg-red-500/15 px-4 py-2 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25"
+        className="inline-block self-start rounded-lg bg-red-500/15 px-4 py-2 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25"
       >
         View Full Evidence
       </Link>
+    </aside>
+  );
+}
+
+function TimingRow({ label, ms }: { label: string; ms: number }) {
+  return (
+    <div className="flex items-baseline justify-between border-b border-slate-800/70 pb-1 text-sm">
+      <span className="text-slate-300">{label}</span>
+      <span className="font-mono tabular-nums text-slate-100">{Math.round(ms)} ms</span>
     </div>
+  );
+}
+
+// The inline attack launcher: a left-side drawer on desktop, a full-height modal
+// on small screens. Renders the same AttackPanel /launch does; the wall stays
+// live behind it so a launched attack flares on the map and enters the queue.
+function LauncherDrawer({
+  persona,
+  onNewPersona,
+  onClose,
+}: {
+  persona: { tenantId: string; persona: PersonaSummary } | null;
+  onNewPersona: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <aside
+      className="pointer-events-auto fixed z-30 flex flex-col overflow-y-auto border-slate-700/60 bg-[#0a0d12]/97 backdrop-blur
+        inset-0 p-5
+        sm:inset-y-0 sm:left-0 sm:right-auto sm:w-[26rem] sm:border-r sm:p-6"
+    >
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">Launch An Attack</h2>
+          <p className="mt-0.5 text-sm text-slate-400">Pick an attack and watch it flare on the wall.</p>
+        </div>
+        <button
+          onClick={onClose}
+          aria-label="Close The Launcher"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-600/60 text-slate-400 transition-colors hover:bg-slate-700/50 hover:text-slate-100"
+        >
+          &times;
+        </button>
+      </div>
+
+      <div className="mt-6">
+        {persona ? (
+          <AttackPanel
+            tenantId={persona.tenantId}
+            persona={persona.persona}
+            onNewPersona={onNewPersona}
+          />
+        ) : (
+          <p className="text-sm text-slate-400">Assigning a persona…</p>
+        )}
+      </div>
+    </aside>
   );
 }
 

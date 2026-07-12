@@ -5,14 +5,12 @@
 // client component and is kept until the visitor reloads. Nothing about the
 // visitor is persisted (PLAN: no audience identities beyond the assignment).
 
-import { makeProfile, personaSummary, TENANT_COUNT } from "@/lib/world";
+import { assignPersona } from "@/lib/persona";
 import LaunchClient from "./launch-client";
 
 export const dynamic = "force-dynamic";
 
 export default function LaunchPage() {
-  const index = Math.floor(Math.random() * TENANT_COUNT);
-  const profile = makeProfile(index);
-  const persona = personaSummary(profile);
-  return <LaunchClient tenantId={profile.id} persona={persona} />;
+  const { tenantId, persona } = assignPersona();
+  return <LaunchClient tenantId={tenantId} persona={persona} />;
 }

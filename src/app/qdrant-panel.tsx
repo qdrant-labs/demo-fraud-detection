@@ -209,59 +209,79 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
   const alert = finalRatio > THRESHOLD;
 
   return (
-    <div className="flex flex-col gap-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">
-        How Qdrant Sees It
-      </h2>
+    <section className="flex flex-col gap-4">
+      <h3 className="text-base font-semibold text-slate-100">How This Alert Was Caught</h3>
+
+      <Step
+        n={1}
+        title="Every Transaction Becomes 31 Numbers"
+        body="Amount, time of day, place, and merchant type are turned into a point with 31 coordinates. Similar behavior lands close together; unusual behavior lands far away."
+      />
+
+      <Step
+        n={2}
+        title="Qdrant Finds the 10 Most Similar Past Transactions"
+        body="Qdrant is a vector search engine. All 200 customers share one collection, and a tenant filter scopes every search to this customer's own history. Gray dots are this customer's past transactions, the red dot is this event, and the amber dots are its 10 nearest neighbors."
+      />
+
       <canvas
         ref={canvasRef}
         className="w-full rounded-lg border border-slate-700/60 bg-slate-900/50"
       />
 
-      <div className="grid grid-cols-3 gap-2 font-mono">
-        <Cell label="d_event" value={fmt(nums.dEvent, 3)} />
-        <Cell label="d_local" value={fmt(nums.dLocal, 3)} />
+      <div className="grid grid-cols-3 gap-2">
+        <Cell label="Event To Neighbors" symbol="d_event" value={fmt(nums.dEvent, 3)} />
+        <Cell label="Neighbor Spread" symbol="d_local" value={fmt(nums.dLocal, 3)} />
         <Cell
-          label={`ratio vs ${THRESHOLD.toFixed(1)}`}
+          label="Ratio, Alerts Past 2.0"
           value={`${fmt(nums.ratio, 2)}x`}
           highlight={nums.ratioDone && alert}
         />
       </div>
 
-      {nums.ratioDone ? (
-        <p className="font-mono text-sm text-slate-300">
-          {fmt(subject.d_event, 3)} / {fmt(subject.d_local, 3)} = {fmt(finalRatio, 2)}x{" "}
-          {alert ? ">" : "<="} {THRESHOLD.toFixed(1)}{" "}
-          <span className={alert ? "text-red-400" : "text-slate-400"}>
-            {alert ? "Alert" : "Normal"}
-          </span>
-        </p>
-      ) : null}
+      <Step
+        n={3}
+        title="The Distance Ratio Decides"
+        body={`This event sits ${fmt(finalRatio, 1)}x farther from its 10 neighbors than those neighbors sit from each other. Anything past 2.0 raises an alert.`}
+      />
+    </section>
+  );
+}
 
-      <p className="text-xs leading-snug text-slate-500">
-        Each dot is one of this customer&apos;s past transactions, embedded as a 31-d
-        vector. The score is this event&apos;s mean distance to its 10 nearest
-        neighbors, divided by how tightly those neighbors cluster.
-      </p>
+// One numbered teaching step. Body text is text-sm/slate-300 (the panel's
+// legibility floor) so nothing here reads as fine print.
+function Step({ n, title, body }: { n: number; title: string; body: string }) {
+  return (
+    <div className="flex gap-3">
+      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-600/70 text-sm font-semibold text-slate-200">
+        {n}
+      </span>
+      <div>
+        <p className="text-sm font-semibold text-slate-100">{title}</p>
+        <p className="mt-1 text-sm leading-snug text-slate-300">{body}</p>
+      </div>
     </div>
   );
 }
 
 function Cell({
   label,
+  symbol,
   value,
   highlight,
 }: {
   label: string;
+  symbol?: string; // mono math symbol, the one sub-label allowed below the floor
   value: string;
   highlight?: boolean;
 }) {
   return (
     <div className="rounded-lg border border-slate-700/60 bg-slate-800/40 px-3 py-2">
-      <div className="text-[0.65rem] text-slate-500">{label}</div>
+      <div className="text-sm leading-tight text-slate-300">{label}</div>
+      {symbol ? <div className="font-mono text-xs text-slate-500">{symbol}</div> : null}
       <div
         className={
-          "mt-0.5 text-lg tabular-nums " + (highlight ? "text-red-400" : "text-slate-100")
+          "mt-1 font-mono text-xl tabular-nums " + (highlight ? "text-red-400" : "text-slate-100")
         }
       >
         {value}
