@@ -1,11 +1,11 @@
+# Qdrant Fraud Detection
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="public/qdrant-fraud-detection-lockup-dark.png">
     <img src="public/qdrant-fraud-detection-lockup.png" alt="Fraud Detection by Qdrant" width="440">
   </picture>
 </p>
-
-# Qdrant Fraud Detection
 
 **[Live demo](https://demo-fraud-detection-eta.vercel.app)**
 
