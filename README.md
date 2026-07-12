@@ -53,6 +53,14 @@ The feature vector comes from a pure function, not a learned model. That keeps t
 
 The first 30 events for a new customer score but never alert, which gives each customer a learning window.
 
+## Explainability
+
+The anomaly score answers: "Is this unlike the customer's own history?" The fraud type answers: "What changed?"
+
+In this demo, the attack type comes from the launched scenario: Geo-Hop, Card Testing Burst, or Amount Ladder. The evidence panel then shows the signals behind that label, such as the distance between cities, repeated attempts, amount changes, nearest neighbors, and score math.
+
+In a real system, the type would usually come from a trained model, business rules, analyst feedback, or a mix of all three. Qdrant provides the nearby historical transactions and stored evidence that make the alert easier to inspect.
+
 ## Qdrant Query
 
 The core detection step is one formula query over a tenant-filtered prefetch. The prefetch excludes the last hour, so a fraud burst cannot become its own nearest-neighbor cluster and hide itself.
@@ -132,6 +140,8 @@ npm run evals                 # runs the suite against throwaway collections
 ## Scope
 
 This demo shows the retrieval mechanics behind per-customer anomaly scoring on synthetic data. It is not a production fraud model.
+
+For production, most teams would train a model on their own transaction history and confirmed fraud cases. Qdrant would store the resulting vectors and metadata, then retrieve similar past behavior for fast scoring and evidence.
 
 The synthetic world separates fraud from normal traffic more cleanly than real payments. The threshold and features are tuned on this generator and validated on a held-out seed. The one-hour neighbor exclusion is sized to this demo's motif durations.
 
