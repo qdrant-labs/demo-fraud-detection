@@ -23,8 +23,12 @@ export const FEATURE_VECTOR = "features";
 // spaces (dim 29 amount-ratio-median shifts with the window). See seed.ts.
 export const CONTEXT_LIMIT = 30;
 
-// Env is read once at import. QDRANT_URL / QDRANT_API_KEY come from .env
-// (loaded via `tsx --env-file=.env`) or the Vercel environment.
+// QDRANT_URL / QDRANT_API_KEY come from .env (loaded via `tsx --env-file=.env`)
+// or the Vercel environment. Construction is deferred to the first method call:
+// the production build imports this module while collecting page data, and must
+// not build a live client (nor require the URL) at build time. A Proxy keeps the
+// `qdrant.method()` call sites unchanged while creating the client lazily.
+let client: QdrantClient | undefined;
 function makeClient(): QdrantClient {
   const url = process.env.QDRANT_URL;
   const apiKey = process.env.QDRANT_API_KEY;
@@ -32,7 +36,13 @@ function makeClient(): QdrantClient {
   return new QdrantClient({ url, apiKey });
 }
 
-export const qdrant = makeClient();
+export const qdrant = new Proxy({} as QdrantClient, {
+  get(_t, prop) {
+    client ??= makeClient();
+    const value = Reflect.get(client, prop, client);
+    return typeof value === "function" ? value.bind(client) : value;
+  },
+});
 
 // Create the collection if absent, then ensure every payload index exists.
 // Idempotent on both counts: an existing collection is left alone, and creating
