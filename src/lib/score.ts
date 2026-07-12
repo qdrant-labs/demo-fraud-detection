@@ -167,6 +167,7 @@ function priorFromPayload(payload: Record<string, unknown> | null | undefined): 
 export async function scoreEvent(
   tx: Transaction,
   timings?: Partial<StageTimings>,
+  opts?: { persist?: boolean },
 ): Promise<ScoredEvent> {
   const tenantIndex = Number(tx.tenant_id.slice(1));
   const profile = makeProfile(tenantIndex, ACTIVE_WORLD_SEED);
@@ -297,20 +298,34 @@ export async function scoreEvent(
   // full scoring result (neighbor_ids pinned, d_event, d_local, alerted,
   // explanation) rides along so the wall and the evidence panel can replay this
   // event on any instance without a second kNN.
-  await qdrant.upsert(COLLECTION, {
-    wait: true,
-    points: [
-      pointFor(tx, eventVector, recent, {
-        score,
-        alerted,
-        explanation,
-        neighbor_ids: neighborIds,
-        d_event,
-        d_local,
-      }),
-    ],
-  });
-  const t3 = performance.now();
+  //
+  // Persist only what belongs in the tenant's history: anything alerted (so its
+  // evidence stays retrievable), plus events a caller marks with persist:true —
+  // the launched/injected fraud sequences whose bursts must build up as they
+  // score. Ambient background traffic is scored and shown but NOT stored: every
+  // live event is timestamped "now", so it would take the newest recent-history
+  // slots ahead of the pre-seeded (pre-EPOCH) baseline and drift every tenant
+  // into marginal alerts. This is a persistence policy, not scoring — the score
+  // above never reads it. Default true so evals and the attack route are
+  // unchanged; only the wall's background generator opts out.
+  const persist = alerted || (opts?.persist ?? true);
+  let t3 = t2;
+  if (persist) {
+    await qdrant.upsert(COLLECTION, {
+      wait: true,
+      points: [
+        pointFor(tx, eventVector, recent, {
+          score,
+          alerted,
+          explanation,
+          neighbor_ids: neighborIds,
+          d_event,
+          d_local,
+        }),
+      ],
+    });
+    t3 = performance.now();
+  }
 
   if (timings) {
     timings.scroll = t1 - t0;

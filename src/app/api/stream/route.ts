@@ -172,7 +172,11 @@ export async function GET(req: Request): Promise<Response> {
             txs.sort((a, b) => a.ts.localeCompare(b.ts));
             for (const tx of txs) {
               const timings: Partial<StageTimings> = {};
-              const s = await scoreEvent(tx, timings);
+              // Persist only injected fraud sequences (their bursts must build up
+              // as they score); ambient background traffic is shown but not stored,
+              // so its "now" timestamp never crowds the baseline out of later
+              // events' recent-history. Alerts still persist (see scoreEvent).
+              const s = await scoreEvent(tx, timings, { persist: tx.motif !== "none" });
               emit({
                 id: tx.id,
                 tenant_id: tx.tenant_id,
