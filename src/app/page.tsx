@@ -861,8 +861,7 @@ function AlertPanel({
           <TimingRow label="Similarity Search" ms={timings.knn} />
           <TimingRow label="Saving The Event" ms={timings.upsert} />
           <p className="mt-1 text-sm leading-snug text-slate-300">
-            The saved event was searchable immediately. The next transaction scores against it with
-            no delay.
+            The saved event was searchable immediately; the next transaction scores against it.
           </p>
         </section>
       ) : null}

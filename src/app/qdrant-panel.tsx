@@ -215,13 +215,13 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
       <Step
         n={1}
         title="Every Transaction Becomes 31 Numbers"
-        body="Amount, time of day, place, and merchant type are turned into a point with 31 coordinates. Similar behavior lands close together; unusual behavior lands far away."
+        body="Amount, time, place, and merchant type. Similar behavior lands close together; unusual behavior lands far away."
       />
 
       <Step
         n={2}
         title="Qdrant Finds the 10 Most Similar Past Transactions"
-        body="Qdrant is a vector search engine. All 200 customers share one collection, and a tenant filter scopes every search to this customer's own history. Gray dots are this customer's past transactions, the red dot is this event, and the amber dots are its 10 nearest neighbors."
+        body="Searched against this customer's history only. Gray dots are their past transactions, red is this event, amber are the 10 nearest."
       />
 
       <canvas
@@ -242,7 +242,7 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
       <Step
         n={3}
         title="The Distance Ratio Decides"
-        body={`This event sits ${fmt(finalRatio, 1)}x farther from its 10 neighbors than those neighbors sit from each other. Anything past 2.0 raises an alert.`}
+        body={`This event sits ${fmt(finalRatio, 1)}x farther from its neighbors than they sit from each other. Past 2.0 is an alert.`}
       />
     </section>
   );
