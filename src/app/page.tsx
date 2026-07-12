@@ -278,8 +278,18 @@ export default function Wall() {
         lastAt: now,
         played: false,
       };
-      // Newest first; drop the oldest past the cap.
-      return [story, ...prev].slice(0, STORY_CAP);
+      // Newest first; drop the oldest past the cap, but never evict the story the
+      // viewer has pinned. Under a burst of alerts the pinned (older) story would
+      // otherwise slide past the cap and its panel would vanish mid-view.
+      const all = [story, ...prev];
+      if (all.length <= STORY_CAP) return all;
+      const pinnedId = playingIdRef.current;
+      const kept = all.slice(0, STORY_CAP);
+      if (pinnedId && !kept.some((s) => s.id === pinnedId)) {
+        const pinned = all.find((s) => s.id === pinnedId);
+        if (pinned) return [...all.slice(0, STORY_CAP - 1), pinned];
+      }
+      return kept;
     });
   }
 
