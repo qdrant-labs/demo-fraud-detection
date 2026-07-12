@@ -1,20 +1,20 @@
-// Phase 5 gate: the browser-attack hero moment. With the dev server up, this
-// connects an SSE client to /api/stream (simulating the projected wall), then
-// launches each of the three attack cards against a fresh persona and measures
-// the flare end to end.
+// Phase 5 gate: the browser-attack hero moment on the single-page wall. With the
+// dev server up, this connects an SSE client to /api/stream (simulating the
+// projected wall), assigns a persona via GET /api/persona, then launches each of
+// the three attack cards and measures the flare end to end.
 //
 // Per motif it asserts / reports:
 //   (a) time from POST start to the first scored event in the attack stream
 //   (b) time from POST start to that event ID arriving on the wall SSE (flare)
 //   (c) highest score and whether it alerted
-//   (d) /alert/[id] renders (HTTP 200) and its data-stored-score matches the
-//       attack's reported highest score
+//   (d) GET /api/alert/[id] returns 200, reports alerted:true, and its stored
+//       score matches the attack's reported highest score
 // Every motif's highest-scoring event MUST alert (the demo's hero). A motif
 // that fails to alert is a FAILING gate: scores are reported honestly and no
 // threshold is tuned to force a pass.
 //
 // Also: a repeat-launch check (same persona + motif twice -> distinct IDs, both
-// alert) and a mobile-first responsive check on the /launch HTML.
+// alert).
 //
 // Run (with `npm run dev` already up):
 //   npx tsx --env-file=.env scripts/gate-hero.ts
@@ -26,8 +26,12 @@ type Motif = (typeof MOTIFS)[number];
 const SCORE_TOLERANCE = 1e-3;
 const FLARE_TIMEOUT_MS = 8000;
 
-function randomTenant(): string {
-  return "t" + String(Math.floor(Math.random() * 200)).padStart(4, "0");
+// Assign a tenant the way the wall's drawer does: GET /api/persona.
+async function assignTenant(): Promise<string> {
+  const resp = await fetch(`${BASE}/api/persona`);
+  if (!resp.ok) throw new Error(`persona HTTP ${resp.status}`);
+  const { tenantId } = (await resp.json()) as { tenantId: string };
+  return tenantId;
 }
 
 interface AttackResult {
@@ -156,12 +160,13 @@ class WallReader {
   }
 }
 
-async function storedScoreOf(id: string): Promise<{ status: number; storedScore: number | null }> {
-  const resp = await fetch(`${BASE}/alert/${id}`);
-  const html = await resp.text();
-  const m = html.match(/data-stored-score="([^"]*)"/);
-  const storedScore = m && m[1] ? Number(m[1]) : null;
-  return { status: resp.status, storedScore };
+async function evidenceOf(
+  id: string,
+): Promise<{ status: number; storedScore: number | null; alerted: boolean }> {
+  const resp = await fetch(`${BASE}/api/alert/${id}`);
+  if (!resp.ok) return { status: resp.status, storedScore: null, alerted: false };
+  const data = (await resp.json()) as { stored: { score: number | null }; alerted: boolean };
+  return { status: resp.status, storedScore: data.stored.score, alerted: data.alerted };
 }
 
 interface MotifReport {
@@ -172,6 +177,7 @@ interface MotifReport {
   highScore: number;
   alerted: boolean;
   alertStatus: number;
+  alertPageAlerted: boolean;
   storedScore: number | null;
   scoreMatch: boolean;
 }
@@ -186,12 +192,12 @@ async function main() {
 
   const reports: MotifReport[] = [];
   for (const motif of MOTIFS) {
-    const tenant = randomTenant();
+    const tenant = await assignTenant();
     const postStart = Date.now();
     const res = await launch(tenant, motif);
     const flareAt = await wall.waitFor(res.highId, FLARE_TIMEOUT_MS);
     const flareMs = flareAt === null ? null : flareAt - postStart;
-    const alert = await storedScoreOf(res.highId);
+    const alert = await evidenceOf(res.highId);
     const scoreMatch =
       alert.storedScore !== null && Math.abs(alert.storedScore - res.highScore) < SCORE_TOLERANCE;
 
@@ -203,20 +209,21 @@ async function main() {
       highScore: res.highScore,
       alerted: res.alerted,
       alertStatus: alert.status,
+      alertPageAlerted: alert.alerted,
       storedScore: alert.storedScore,
       scoreMatch,
     });
     console.log(
       `  ${motif.padEnd(13)} tenant=${tenant} firstEvent=${res.firstEventMs}ms ` +
         `flare=${flareMs === null ? "MISS" : flareMs + "ms"} high=${res.highScore.toFixed(2)}x ` +
-        `alerted=${res.alerted} alertHTTP=${alert.status} scoreMatch=${scoreMatch}`,
+        `alerted=${res.alerted} alertHTTP=${alert.status} alertPageAlerted=${alert.alerted} scoreMatch=${scoreMatch}`,
     );
   }
 
   // Repeat-launch: same persona + motif twice -> distinct IDs, both alert. Uses
   // geo_hop (a reliable alerter) so this isolates ID uniqueness + idempotency
   // from any motif-level detection question.
-  const repeatTenant = randomTenant();
+  const repeatTenant = await assignTenant();
   const r1 = await launch(repeatTenant, "geo_hop");
   const r2 = await launch(repeatTenant, "geo_hop");
   const overlap = r1.ids.filter((id) => r2.ids.includes(id));
@@ -227,15 +234,6 @@ async function main() {
       `(overlap=${overlap.length}) bothAlert=${bothAlert} (${r1.highScore.toFixed(2)}x, ${r2.highScore.toFixed(2)}x)`,
   );
 
-  // Responsive: /launch is mobile-first (uses max-width, no fixed pixel widths).
-  const launchHtml = await (await fetch(`${BASE}/launch`)).text();
-  const hasMaxWidth = /max-w-/.test(launchHtml);
-  const hasFixedPxWidth = /\bw-\[\d+px\]/.test(launchHtml) || /width:\s*\d+px/.test(launchHtml);
-  const responsive = hasMaxWidth && !hasFixedPxWidth;
-  console.log(
-    `Responsive /launch: maxWidth=${hasMaxWidth} fixedPxWidth=${hasFixedPxWidth} -> ${responsive ? "mobile-first" : "NOT mobile-first"}`,
-  );
-
   wall.stop();
 
   // --- Verdict ---
@@ -244,13 +242,13 @@ async function main() {
   const rows: [string, string, boolean][] = [];
   for (const r of reports) {
     rows.push([`${r.motif} alerted`, `${r.highScore.toFixed(2)}x`, r.alerted]);
-    rows.push([`${r.motif} alert page 200`, String(r.alertStatus), r.alertStatus === 200]);
+    rows.push([`${r.motif} alert api 200`, String(r.alertStatus), r.alertStatus === 200]);
+    rows.push([`${r.motif} alert api alerted`, String(r.alertPageAlerted), r.alertPageAlerted]);
     rows.push([`${r.motif} score matches`, r.storedScore === null ? "—" : r.storedScore.toFixed(3), r.scoreMatch]);
     rows.push([`${r.motif} flare seen`, r.flareMs === null ? "MISS" : `${r.flareMs}ms`, r.flareMs !== null]);
   }
   rows.push(["Repeat-launch distinct IDs", `overlap ${overlap.length}`, distinctIds]);
   rows.push(["Repeat-launch both alert", `${r1.highScore.toFixed(2)}/${r2.highScore.toFixed(2)}`, bothAlert]);
-  rows.push(["/launch mobile-first", responsive ? "yes" : "no", responsive]);
   for (const [k, v, ok] of rows) {
     console.log(`  ${ok ? "PASS" : "FAIL"}  ${k.padEnd(30)} ${v}`);
   }
@@ -268,10 +266,16 @@ async function main() {
   );
 
   const passed =
-    reports.every((r) => r.alerted && r.alertStatus === 200 && r.scoreMatch && r.flareMs !== null) &&
+    reports.every(
+      (r) =>
+        r.alerted &&
+        r.alertStatus === 200 &&
+        r.alertPageAlerted &&
+        r.scoreMatch &&
+        r.flareMs !== null,
+    ) &&
     distinctIds &&
-    bothAlert &&
-    responsive;
+    bothAlert;
   console.log(passed ? "\nGATE PASSED" : "\nGATE FAILED");
   process.exit(passed ? 0 : 1);
 }

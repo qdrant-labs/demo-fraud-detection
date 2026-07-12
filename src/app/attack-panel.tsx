@@ -2,13 +2,11 @@
 
 // The launcher's core UI: the persona card, three attack cards, and the live
 // launch status (per-event progress + running highest score streamed from
-// /api/attack as NDJSON). Shared by the /launch page and the wall's inline
-// drawer so both render one source. /launch also opts into the compact embedded
-// wall strip via `embeddedWall`, for the single-tab phone flow; the wall drawer
-// leaves it off because the real wall is right behind it.
+// /api/attack as NDJSON). Rendered inside the wall's launch drawer; the real
+// wall is right behind it, so a launched attack flares on the map. When the
+// sequence alerts, "See The Evidence" pins its story in the wall's alert panel.
 
-import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import { useState } from "react";
 import type { PersonaSummary } from "@/lib/world";
 
 type Motif = "geo_hop" | "card_testing" | "ladder";
@@ -69,12 +67,14 @@ export default function AttackPanel({
   tenantId,
   persona,
   onNewPersona,
-  embeddedWall = false,
+  onSeeEvidence,
 }: {
   tenantId: string;
   persona: PersonaSummary;
   onNewPersona: () => void;
-  embeddedWall?: boolean;
+  // Supplied by the wall: pin the story containing this event id in the alert
+  // panel. Absent in contexts with no wall behind the drawer.
+  onSeeEvidence?: (eventId: string) => void;
 }) {
   const [status, setStatus] = useState<Status>("idle");
   const [active, setActive] = useState<Motif | null>(null);
@@ -231,19 +231,18 @@ export default function AttackPanel({
                   ? "Your attack flared on the wall."
                   : "Sequence scored. Watch the wall."}
               </p>
-              <Link
-                href={summary.alertPath}
-                className="mt-2 inline-block rounded-lg bg-red-500/15 px-4 py-2 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/25"
-              >
-                See The Evidence For Your Attack
-              </Link>
+              {summary.alerted && onSeeEvidence ? (
+                <button
+                  onClick={() => onSeeEvidence(summary.highId)}
+                  className="mt-2 inline-block rounded-lg bg-red-500/15 px-4 py-2 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/25"
+                >
+                  See The Evidence
+                </button>
+              ) : null}
             </div>
           ) : null}
         </section>
       ) : null}
-
-      {/* Compact embedded wall, opened once a launch begins (single-tab phone flow) */}
-      {embeddedWall && status !== "idle" ? <WallStrip /> : null}
     </div>
   );
 }
@@ -252,67 +251,4 @@ function formatList(items: string[]): string {
   if (items.length <= 1) return items.join("");
   if (items.length === 2) return `${items[0]} and ${items[1]}`;
   return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
-}
-
-// Compact wall: reuses the /api/stream EventSource as a horizontal strip of
-// recent events. Alerts flare red and the latest one-liner shows beneath.
-interface StripEvent {
-  id: string | number;
-  alerted: boolean;
-}
-
-function WallStrip() {
-  const [dots, setDots] = useState<StripEvent[]>([]);
-  const [lastAlert, setLastAlert] = useState<string | null>(null);
-  const [live, setLive] = useState(false);
-  const seen = useRef<Set<string | number>>(new Set());
-
-  useEffect(() => {
-    const es = new EventSource("/api/stream");
-    es.addEventListener("open", () => setLive(true));
-    es.onerror = () => setLive(false);
-    es.addEventListener("tx", (e) => {
-      const ev = JSON.parse((e as MessageEvent).data) as {
-        id: string | number;
-        alerted: boolean;
-        explanation: string;
-      };
-      if (seen.current.has(ev.id)) return;
-      seen.current.add(ev.id);
-      setLive(true);
-      setDots((prev) => [...prev.slice(-49), { id: ev.id, alerted: ev.alerted }]);
-      if (ev.alerted && ev.explanation) setLastAlert(ev.explanation);
-    });
-    return () => es.close();
-  }, []);
-
-  return (
-    <section className="rounded-xl border border-slate-700/60 bg-[#04060a] px-4 py-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs uppercase tracking-wide text-slate-500">Live Wall</span>
-        <span className="flex items-center gap-2 text-xs text-slate-400">
-          <span
-            className="inline-block h-2 w-2 rounded-full"
-            style={{ backgroundColor: live ? "#22c55e" : "#f59e0b" }}
-          />
-          {live ? "Live" : "Connecting"}
-        </span>
-      </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        {dots.map((d) => (
-          <span
-            key={String(d.id)}
-            className="inline-block h-2 w-2 rounded-full"
-            style={{
-              backgroundColor: d.alerted ? "#ef4444" : "rgba(148,163,184,0.6)",
-              boxShadow: d.alerted ? "0 0 8px rgba(239,68,68,0.9)" : "none",
-            }}
-          />
-        ))}
-      </div>
-      {lastAlert ? (
-        <p className="mt-2 text-xs leading-snug text-red-300">{lastAlert}</p>
-      ) : null}
-    </section>
-  );
 }

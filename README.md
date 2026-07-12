@@ -15,18 +15,16 @@ A pinned story opens one panel that reads top to bottom: the plain-language reas
 
 Alerts collect in a queue at the lower left, one entry per attack. By default nothing plays on its own: click an entry to pin its story, study it as long as you want, and close it with the × when done. The Auto Play toggle switches to a self-running loop that plays each new story for about seven seconds, which is the mode for a booth wall; the setting survives reloads.
 
-Launch An Attack opens a drawer on the wall itself: you get a pre-seeded persona, tap one of three attack cards (Geo-Hop, Card Testing Burst, or Amount Ladder), watch the per-event scores stream in, and see the flare land on the map behind the drawer. The whole demo works from one page.
+Launch An Attack opens a drawer on the wall itself: you get a pre-seeded persona, tap one of three attack cards (Geo-Hop, Card Testing Burst, or Amount Ladder), watch the per-event scores stream in, and see the flare land on the map behind the drawer. Once the sequence alerts, See The Evidence pins its story in the alert panel on the right. The wall is responsive and the drawer works on a phone, so the shareable link for the booth hero moment is the main URL: an audience member opens it, launches an attack, and watches the flare land on the projected wall.
 
-The evidence panel (`/alert/[id]`) opens when you click an alert. It shows the score arithmetic step by step, the ten nearest neighbors with their real distances, and the customer's baseline projected to 2-D with PCA computed in the browser. The score it displays is recomputed from the neighbor set pinned at scoring time, so it reproduces the original number exactly.
-
-The standalone launch page (`/launch`) is the phone path for the booth hero moment: an audience member scans a QR code or opens a shared link, gets the same persona and attack cards, and watches the flare land on the projected wall. It renders the same launcher component as the wall's drawer, plus a compact embedded wall strip so the flow reads from a single phone screen.
+View Full Evidence at the bottom of the alert panel expands in place: the ten nearest neighbors with their real distances, and one line proving the stored score reproduces from that pinned neighbor set. The score comes from `GET /api/alert/[id]`, recomputed from the neighbor set pinned at scoring time, so it reproduces the original number exactly.
 
 ### Demo Script
 
 1. Open the wall: events pinging around the world map, ticker live.
 2. Turn on Auto Play for a self-running wall, or click a story in the queue (one lands every 20 seconds or so): the camera zooms in, and the panel walks the audience from what happened, through the three steps of how it was caught, to the milliseconds it took.
-3. Click View Full Evidence for the deep page: the neighbor list with real distances and the exact arithmetic, reproduced from the pinned neighbor set.
-4. Hero: open the launch drawer on the wall, or share the launch link with a phone. Pick an attack card and the flare lands before the phone drops; the phone then opens the evidence panel for the fraud it launched.
+3. Click View Full Evidence in the panel: the neighbor list with real distances expands in place, with the line showing the stored score reproduced from the pinned neighbor set.
+4. Hero: open the launch drawer on the wall, or share the wall's URL with a phone. Pick an attack card and the flare lands before the phone drops; See The Evidence pins the story for the fraud it launched.
 5. Mention: every event was searchable the instant it landed, in one collection, across 200 customers with one baseline each.
 
 ## Architecture
@@ -35,7 +33,6 @@ The standalone launch page (`/launch`) is the phone path for the booth hero mome
 flowchart LR
   subgraph browser["Browser"]
     W["Wall<br/>/"]
-    L["Launch<br/>/launch"]
   end
   subgraph vercel["Vercel Functions"]
     S["GET /api/stream<br/>SSE loop"]
@@ -45,11 +42,10 @@ flowchart LR
 
   W -- EventSource --> S
   W -- "launch attack (drawer)" --> A
-  L -- launch attack --> A
   S -- "generate, score, scroll for attacks" --> Q
   A -- "score, upsert" --> Q
   S -- tx events --> W
-  A -- per-event status --> L
+  A -- per-event status --> W
 ```
 
 Qdrant is the only state. The SSE loop generates events on the fly, seeded by `(world_seed, time_bucket)` with deterministic event IDs, so a reconnect regenerates byte-identical events for the same bucket and upserts stay idempotent. A browser launch may hit a different serverless instance than the wall's stream, so the wall picks up recent browser attacks with a timestamp-filtered scroll: Qdrant is the message bus.
@@ -58,11 +54,10 @@ Scored events would otherwise accumulate forever (each open wall adds 5 to 6 poi
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/` | GET | The wall |
-| `/launch` | GET | Attack launcher, assigns a pre-seeded persona |
-| `/alert/[id]` | GET | Evidence panel for one scored event |
+| `/` | GET | The wall, including the launch drawer and the alert panel |
 | `/api/stream` | GET | SSE loop: generates, scores, and relays browser attacks |
 | `/api/attack` | POST | Runs one attack sequence, streams per-event status as NDJSON |
+| `/api/alert/[id]` | GET | JSON evidence for one scored event: pinned neighbors and the recomputed score |
 | `/api/baseline/[tenant]` | GET | A customer's baseline vectors for the scatter plot |
 | `/api/persona` | GET | Assigns a pre-seeded persona for the wall's launch drawer |
 

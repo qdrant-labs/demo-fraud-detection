@@ -197,7 +197,7 @@ export function profiles(seed: string = WORLD_SEED): TenantProfile[] {
   return Array.from({ length: TENANT_COUNT }, (_, i) => makeProfile(i, seed));
 }
 
-// Human-readable "normal life" summary for the /launch persona card.
+// Human-readable "normal life" summary for the launch drawer's persona card.
 export interface PersonaSummary {
   homeCity: string;
   favoriteCategories: string[];
@@ -316,7 +316,7 @@ export function baselineTransactions(
 
 // Each motif is a deterministic sequence generator. Events carry the ground-
 // truth `motif` label. Used by both the live generator (occasional injection)
-// and the /launch attack cards; the caller sets `src` (browser_attack for
+// and the drawer's attack cards; the caller sets `src` (browser_attack for
 // launches, generator for injection).
 export function motifSequence(
   motif: Exclude<Motif, "none">,

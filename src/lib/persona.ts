@@ -1,5 +1,5 @@
-// Assign a random pre-seeded persona. One source for both the /launch server
-// component and GET /api/persona, so the page and the route cannot drift.
+// Assign a random pre-seeded persona for the wall's launch drawer, served by
+// GET /api/persona.
 //
 // Lives outside world.ts on purpose: visitor assignment is meant to be random,
 // and world.ts guarantees "no Math.random()" so the synthetic world stays a

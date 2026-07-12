@@ -13,8 +13,6 @@
 // rendering and the story choreography are new.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { CITIES, haversineKm } from "@/lib/geo";
 import {
   fitCamera,
@@ -28,7 +26,7 @@ import {
 import landDots from "@/lib/land-dots.json";
 import type { PersonaSummary } from "@/lib/world";
 import QdrantPanel, { type PanelSubject } from "./qdrant-panel";
-import AttackPanel from "./launch/attack-panel";
+import AttackPanel from "./attack-panel";
 
 interface WallEvent {
   id: string | number;
@@ -191,7 +189,6 @@ function drawArc(
 }
 
 export default function Wall() {
-  const router = useRouter();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pingsRef = useRef<Ping[]>([]);
   const seenRef = useRef<Set<string | number>>(new Set());
@@ -232,7 +229,7 @@ export default function Wall() {
   const [grabbing, setGrabbing] = useState(false);
 
   // The inline attack launcher drawer. Persona is fetched from /api/persona when
-  // the drawer opens (and re-fetched by "New Persona"), matching /launch.
+  // the drawer opens (and re-fetched by "New Persona").
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [persona, setPersona] = useState<{ tenantId: string; persona: PersonaSummary } | null>(null);
 
@@ -566,7 +563,28 @@ export default function Wall() {
     };
   }, []);
 
-  // Hit-test a click against live alert pings; open the nearest one's evidence.
+  // Pin the story whose events include this event id, retrying briefly. A
+  // browser attack's events reach the wall through the stream pickup a beat
+  // after the launch, so the story may not exist yet when the drawer asks; give
+  // up silently after ~5 s. Used by the drawer's "See The Evidence" action and
+  // by clicking an alerted ping.
+  function pinStoryForEvent(eventId: string): void {
+    const deadline = performance.now() + 5000;
+    const attempt = () => {
+      const story = storiesRef.current.find((s) =>
+        s.events.some((e) => String(e.id) === eventId),
+      );
+      if (story) {
+        pinStory(story.id);
+        return;
+      }
+      if (performance.now() < deadline) setTimeout(attempt, 200);
+    };
+    attempt();
+  }
+
+  // Hit-test a click against live alert pings; pin the nearest one's story. A
+  // ping whose story has not arrived yet is ignored.
   function hitTest(mx: number, my: number): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -584,7 +602,7 @@ export default function Wall() {
         best = p;
       }
     }
-    if (best) router.push(`/alert/${best.id}`);
+    if (best) pinStoryForEvent(String(best.id));
   }
 
   // Pointer-drag pans the camera; a release with under ~5px of travel is a click.
@@ -730,12 +748,18 @@ export default function Wall() {
           persona={persona}
           onNewPersona={loadPersona}
           onClose={() => setLauncherOpen(false)}
+          onSeeEvidence={pinStoryForEvent}
         />
       ) : null}
 
       {/* Story queue, newest on top. Click an entry to pin its story on the wall
           and browse at your own pace. Scrolls so it never climbs into the card. */}
-      <div className="absolute bottom-6 left-6 z-10 flex max-h-[calc(100vh-15rem)] w-[26rem] max-w-[80vw] flex-col gap-2 overflow-y-auto">
+      {/* Hidden while the launcher drawer covers the same corner. */}
+      <div
+        className={`absolute bottom-6 left-6 z-10 flex max-h-[calc(100vh-15rem)] w-[26rem] max-w-[80vw] flex-col gap-2 overflow-y-auto ${
+          launcherOpen ? "hidden" : ""
+        }`}
+      >
         {stories.map((s) => {
           const lead = s.events[0];
           const top = s.events.reduce((m, e) => (e.score > m.score ? e : m), s.events[0]);
@@ -777,6 +801,21 @@ export default function Wall() {
 // the scoring timings, and the evidence link. Fixed-right on desktop, bottom
 // sheet on small screens. Keyed by the caller on story.id, so it remounts (and
 // the scatter animation replays) once per story.
+// The GET /api/alert/[id] shape the evidence expander renders.
+interface Evidence {
+  stored: { score: number | null };
+  recomputed: { score: number } | null;
+  neighbors: {
+    id: string | number;
+    merchant: string;
+    amount: number;
+    currency: string;
+    city: string;
+    ts: string;
+    distance: number;
+  }[];
+}
+
 function AlertPanel({
   story,
   subject,
@@ -790,6 +829,28 @@ function AlertPanel({
   const top = story.events.reduce((m, e) => (e.score > m.score ? e : m), story.events[0]);
   const multi = story.events.length > 1;
   const timings = lead.timings;
+
+  // "View Full Evidence" expands in place. The JSON is fetched once on first
+  // expand (keyed by story via the remount), then collapse/expand only toggles.
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [evidence, setEvidence] = useState<Evidence | null>(null);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+
+  async function toggleEvidence(): Promise<void> {
+    if (evidenceOpen) {
+      setEvidenceOpen(false);
+      return;
+    }
+    setEvidenceOpen(true);
+    if (evidence || evidenceLoading) return;
+    setEvidenceLoading(true);
+    try {
+      const r = await fetch(`/api/alert/${top.id}`);
+      if (r.ok) setEvidence((await r.json()) as Evidence);
+    } finally {
+      setEvidenceLoading(false);
+    }
+  }
 
   return (
     <aside
@@ -866,13 +927,60 @@ function AlertPanel({
         </section>
       ) : null}
 
-      {/* e. Evidence link */}
-      <Link
-        href={`/alert/${top.id}`}
-        className="inline-block self-start rounded-lg bg-red-500/15 px-4 py-2 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25"
-      >
-        View Full Evidence
-      </Link>
+      {/* e. Full evidence, expanded in place: the pinned neighbor table and the
+          line proving the stored score reproduces from that neighbor set. */}
+      <section className="flex flex-col gap-3">
+        <button
+          onClick={toggleEvidence}
+          aria-expanded={evidenceOpen}
+          className="inline-block self-start rounded-lg bg-red-500/15 px-4 py-2 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25"
+        >
+          View Full Evidence
+        </button>
+
+        {evidenceOpen ? (
+          evidenceLoading && !evidence ? (
+            <p className="text-sm text-slate-300">Loading evidence…</p>
+          ) : evidence && evidence.recomputed ? (
+            <>
+              <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-700/60">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-800/50 text-xs uppercase tracking-wide text-slate-400">
+                    <tr>
+                      <th className="px-3 py-2">Merchant</th>
+                      <th className="px-3 py-2">Amount</th>
+                      <th className="px-3 py-2">City</th>
+                      <th className="px-3 py-2">Time</th>
+                      <th className="px-3 py-2 text-right">Distance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {evidence.neighbors.map((n) => (
+                      <tr key={String(n.id)} className="border-t border-slate-800 text-slate-300">
+                        <td className="px-3 py-2">{n.merchant}</td>
+                        <td className="px-3 py-2 font-mono tabular-nums">
+                          {n.currency} {n.amount.toLocaleString("en-US")}
+                        </td>
+                        <td className="px-3 py-2">{n.city}</td>
+                        <td className="px-3 py-2 text-slate-400">{n.ts}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">
+                          {n.distance.toFixed(3)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-sm text-slate-300">
+                Stored score {(evidence.stored.score ?? 0).toFixed(3)}; recomputed from the
+                pinned neighbors {evidence.recomputed.score.toFixed(3)}.
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-slate-300">Could not load the evidence.</p>
+          )
+        ) : null}
+      </section>
     </aside>
   );
 }
@@ -887,16 +995,18 @@ function TimingRow({ label, ms }: { label: string; ms: number }) {
 }
 
 // The inline attack launcher: a left-side drawer on desktop, a full-height modal
-// on small screens. Renders the same AttackPanel /launch does; the wall stays
-// live behind it so a launched attack flares on the map and enters the queue.
+// on small screens. The wall stays live behind it, so a launched attack flares
+// on the map and enters the queue; its story pins via "See The Evidence".
 function LauncherDrawer({
   persona,
   onNewPersona,
   onClose,
+  onSeeEvidence,
 }: {
   persona: { tenantId: string; persona: PersonaSummary } | null;
   onNewPersona: () => void;
   onClose: () => void;
+  onSeeEvidence: (eventId: string) => void;
 }) {
   return (
     <aside
@@ -924,6 +1034,7 @@ function LauncherDrawer({
             tenantId={persona.tenantId}
             persona={persona.persona}
             onNewPersona={onNewPersona}
+            onSeeEvidence={onSeeEvidence}
           />
         ) : (
           <p className="text-sm text-slate-400">Assigning a persona…</p>

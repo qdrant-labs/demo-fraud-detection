@@ -1,9 +1,8 @@
-// Phase 4 gate: for 3 alerted generator events, fetch the rendered /alert/[id]
-// page over plain HTTP and assert the score recomputed server-side (from the
-// pinned neighbor vectors) equals the score stored in Qdrant, to 4 decimals.
-//
-// The page embeds both numbers as data attributes so this check parses them
-// without scraping prose. Run gate-wall first so alerted generator events exist.
+// Phase 4 gate: for 3 alerted generator events, fetch GET /api/alert/[id] and
+// assert the score recomputed server-side (from the pinned neighbor vectors)
+// equals the score stored in Qdrant, to 6 decimals, and that the ordered
+// neighbor list is present. Run gate-wall first so alerted generator events
+// exist.
 //
 // Run (with `npm run dev` up): npx tsx --env-file=.env scripts/gate-evidence.ts
 
@@ -12,9 +11,11 @@ import { COLLECTION, qdrant } from "../src/lib/qdrant";
 const BASE = process.env.WALL_URL ?? "http://localhost:3000";
 const WANT = 3;
 
-function attr(html: string, name: string): number | null {
-  const m = html.match(new RegExp(`${name}="([-0-9.]+)"`));
-  return m ? Number(m[1]) : null;
+interface AlertJson {
+  stored: { score: number | null };
+  recomputed: { score: number } | null;
+  neighbor_ids: string[];
+  neighbors: { distance: number }[];
 }
 
 async function main() {
@@ -40,30 +41,35 @@ async function main() {
   let failures = 0;
   for (const id of ids) {
     const stored = Number((scroll.points.find((p) => p.id === id)!.payload as { score: number }).score);
-    const resp = await fetch(`${BASE}/alert/${id}`);
+    const resp = await fetch(`${BASE}/api/alert/${id}`);
     if (!resp.ok) {
       console.log(`  FAIL  ${id}  HTTP ${resp.status}`);
       failures++;
       continue;
     }
-    const html = await resp.text();
-    const pageStored = attr(html, "data-stored-score");
-    const recomputed = attr(html, "data-recomputed-score");
-    const dEvent = attr(html, "data-recomputed-d-event");
-    const dLocal = attr(html, "data-recomputed-d-local");
+    const data = (await resp.json()) as AlertJson;
+    const pageStored = data.stored.score;
+    const recomputed = data.recomputed?.score ?? null;
 
     if (pageStored === null || recomputed === null) {
-      console.log(`  FAIL  ${id}  score attributes missing`);
+      console.log(`  FAIL  ${id}  score missing (stored=${pageStored}, recomputed=${recomputed})`);
       failures++;
       continue;
     }
-    // Round both to 4 decimals and compare.
-    const ok =
-      pageStored.toFixed(4) === recomputed.toFixed(4) &&
-      stored.toFixed(4) === recomputed.toFixed(4);
+    // The pinned neighbor list must be present, ordered (10 rows), and match the
+    // neighbor rows returned for the table.
+    const orderedNeighbors =
+      data.neighbor_ids.length > 0 && data.neighbors.length === data.neighbor_ids.length;
+    // Stored == recomputed to 6 decimals; the JSON stored value must also match
+    // the value read straight from Qdrant.
+    const scoreMatch =
+      pageStored.toFixed(6) === recomputed.toFixed(6) &&
+      stored.toFixed(6) === recomputed.toFixed(6);
+    const ok = scoreMatch && orderedNeighbors;
     if (!ok) failures++;
     console.log(
-      `  ${ok ? "PASS" : "FAIL"}  ${id}  stored=${stored.toFixed(4)} page-stored=${pageStored.toFixed(4)} recomputed=${recomputed.toFixed(4)} (d_event=${dEvent?.toFixed(3)}, d_local=${dLocal?.toFixed(3)})`,
+      `  ${ok ? "PASS" : "FAIL"}  ${id}  stored=${stored.toFixed(6)} json-stored=${pageStored.toFixed(6)} ` +
+        `recomputed=${recomputed.toFixed(6)} neighbors=${data.neighbors.length}/${data.neighbor_ids.length}`,
     );
   }
 

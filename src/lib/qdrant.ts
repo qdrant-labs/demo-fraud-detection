@@ -156,7 +156,7 @@ export function recentHistoryPayload(rh: RecentHistory): RecentHistoryPayload {
 }
 
 // The full scoring result persisted on a scored point's payload. Every field
-// here exists so that another serverless instance (or the /alert/[id] panel)
+// here exists so that another serverless instance (or the alert panel)
 // can replay the event without rescoring: the wall picks up browser-launched
 // attacks scored elsewhere, and the evidence panel must reproduce the exact
 // arithmetic even after later points land. The neighbor set is pinned at
