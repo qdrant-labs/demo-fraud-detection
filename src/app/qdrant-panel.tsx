@@ -214,14 +214,14 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
 
       <Step
         n={1}
-        title="Every Transaction Becomes a Vector"
-        body="Amount, time, place, and merchant type, encoded in 31 dimensions. Similar behavior lands close together in vector space."
+        title="Every Charge Becomes a Vector"
+        body="Amount, time, place, and merchant type combine into one vector. Similar charges land close together."
       />
 
       <Step
         n={2}
-        title="Qdrant Finds The 10 Nearest Neighbors"
-        body="In this customer's history only. Gray is their past, red this transaction, amber the 10 nearest."
+        title="Qdrant Finds 10 Similar Charges"
+        body="In this customer's history only. Gray is their past, red this charge, amber the 10 similar charges."
       />
 
       <canvas
@@ -230,11 +230,20 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
       />
 
       <div className="grid grid-cols-3 gap-2">
-        <Cell label="Event To Neighbors" symbol="d_event" value={fmt(nums.dEvent, 3)} />
-        <Cell label="Neighbor Spread" symbol="d_local" value={fmt(nums.dLocal, 3)} />
         <Cell
-          label="Ratio, Alerts Above 2.0"
-          value={`${fmt(nums.ratio, 2)}x`}
+          label="This Charge"
+          hint="how far this charge sits from 10 similar charges"
+          value={fmt(nums.dEvent, 3)}
+        />
+        <Cell
+          label="Usual Range"
+          hint="how far apart 10 similar charges normally sit"
+          value={fmt(nums.dLocal, 3)}
+        />
+        <Cell
+          label="How Unusual"
+          hint="distance ÷ usual range, alerts above 2×"
+          value={`${fmt(nums.ratio, 2)}×`}
           highlight={nums.ratioDone && alert}
         />
       </div>
@@ -261,19 +270,19 @@ function Step({ n, title, body }: { n: number; title: string; body: string }) {
 
 function Cell({
   label,
-  symbol,
+  hint,
   value,
   highlight,
 }: {
   label: string;
-  symbol?: string; // mono math symbol, the one sub-label allowed below the floor
+  hint?: string; // one-line plain-language explainer, the one sub-label allowed below the floor
   value: string;
   highlight?: boolean;
 }) {
   return (
     <div className="rounded-lg border border-slate-700/60 bg-slate-800/40 px-3 py-2">
       <div className="text-sm leading-tight text-slate-300">{label}</div>
-      {symbol ? <div className="font-mono text-xs text-slate-500">{symbol}</div> : null}
+      {hint ? <div className="mt-0.5 text-xs leading-snug text-slate-500">{hint}</div> : null}
       <div
         className={
           "mt-1 font-mono text-2xl tabular-nums " + (highlight ? "text-red-400" : "text-slate-100")

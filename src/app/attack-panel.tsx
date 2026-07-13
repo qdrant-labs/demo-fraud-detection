@@ -4,7 +4,7 @@
 // launch status (per-event progress + running highest score streamed from
 // /api/attack as NDJSON). Rendered inside the wall's launch drawer; the real
 // wall is right behind it, so a launched attack flares on the map. When the
-// sequence alerts, "See The Evidence" pins its story in the wall's alert panel.
+// sequence alerts, "Show Evidence" pins its story in the wall's alert panel.
 
 import { useState } from "react";
 import type { PersonaSummary } from "@/lib/world";
@@ -23,19 +23,19 @@ const CARDS: Card[] = [
     motif: "geo_hop",
     title: "Impossible Travel",
     blurb:
-      "Two card-present charges in cities minutes apart, faster than any flight.",
+      "Two in-person charges in cities minutes apart, faster than any flight.",
   },
   {
     motif: "card_testing",
     title: "Card Testing Burst",
     blurb:
-      "A burst of tiny online charges at one merchant, seconds apart, probing a stolen card.",
+      "A burst of tiny online charges at one merchant, seconds apart, testing if the card works.",
   },
   {
     motif: "ladder",
     title: "Amount Ladder",
     blurb:
-      "Charges at one merchant that climb each step, minutes apart, testing the limit.",
+      "Charges at one merchant that keep getting larger, minutes apart, testing the limit.",
   },
 ];
 
@@ -145,7 +145,7 @@ export default function AttackPanel({
           <li>Lives in {persona.homeCity}.</li>
           <li>Usually shops {formatList(persona.favoriteCategories)}.</li>
           <li>
-            Typical charge {persona.currency} {persona.typicalAmountRange[0].toLocaleString("en-US")} to{" "}
+            Usual charge {persona.currency} {persona.typicalAmountRange[0].toLocaleString("en-US")} to{" "}
             {persona.typicalAmountRange[1].toLocaleString("en-US")}.
           </li>
         </ul>
@@ -189,12 +189,12 @@ export default function AttackPanel({
             <span className="font-semibold">{activeCard.title}</span>
             <span className="font-mono text-sm text-slate-300">
               {events.length}
-              {events[0] ? ` / ${events[0].total}` : ""} Scored
+              {events[0] ? ` / ${events[0].total}` : ""} Checked
             </span>
           </div>
 
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-xs uppercase tracking-wide text-slate-500">Highest Score</span>
+            <span className="text-xs uppercase tracking-wide text-slate-500">Most Unusual Charge</span>
             <span
               className={
                 "font-mono text-lg font-semibold " +
@@ -202,8 +202,9 @@ export default function AttackPanel({
                 // of the threshold that can drift.
                 (events.some((e) => e.alerted) ? "text-red-400" : "text-slate-200")
               }
+              title="Distance from typical, as a multiple of this customer's usual range"
             >
-              {running.toFixed(2)}x
+              {running.toFixed(2)}× this customer's usual range
             </span>
           </div>
 
@@ -213,8 +214,11 @@ export default function AttackPanel({
                 <span className="truncate">
                   {e.currency} {e.amount.toLocaleString("en-US")} at {e.merchant}, {e.city}
                 </span>
-                <span className={e.alerted ? "text-red-400" : "text-slate-500"}>
-                  {e.score.toFixed(2)}x
+                <span
+                  className={e.alerted ? "text-red-400" : "text-slate-500"}
+                  title="Distance from typical, as a multiple of this customer's usual range"
+                >
+                  {e.score.toFixed(2)}×
                 </span>
               </li>
             ))}
@@ -229,14 +233,14 @@ export default function AttackPanel({
               <p className="text-sm text-slate-300">
                 {summary.alerted
                   ? "Your attack flared on the wall."
-                  : "Scored, no alert. Watch the wall."}
+                  : "Checked, no alert. Watch the wall."}
               </p>
               {summary.alerted && onSeeEvidence ? (
                 <button
                   onClick={() => onSeeEvidence(summary.highId)}
                   className="mt-2 inline-block rounded-lg bg-red-500/15 px-4 py-2 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/25"
                 >
-                  See The Evidence
+                  Show Evidence
                 </button>
               ) : null}
             </div>

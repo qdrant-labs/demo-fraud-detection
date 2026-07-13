@@ -74,6 +74,14 @@ interface Story {
   played: boolean;
 }
 
+// The story's worst charge. One function so the queue card, the alert header,
+// and the "How This Alert Was Caught" arithmetic all point at the same event —
+// picking it independently in each place is how the header ratio and the
+// panel's ratio used to drift apart on multi-charge stories.
+function topEvent(story: Story): WallEvent {
+  return story.events.reduce((m, e) => (e.score > m.score ? e : m), story.events[0]);
+}
+
 type Conn = "connecting" | "live" | "reconnecting";
 
 const NORMAL_LIFE_MS = 3000;
@@ -692,10 +700,13 @@ export default function Wall() {
   const connColor = conn === "live" ? "#22c55e" : "#f59e0b";
 
   const story = playingStory;
-  const subjectEvent = story?.events[0];
-  // Memoized on the story's first event, whose identity never changes for the
-  // story's life. Wall re-renders every 500ms (ticker); a fresh subject object
-  // each render would restart the panel's animation effect mid-play.
+  // The same worst-charge event the header badge shows (topEvent), not
+  // events[0] — otherwise the panel explains a different, usually milder,
+  // charge than the ratio in the header, and the two numbers drift apart.
+  const subjectEvent = story ? topEvent(story) : undefined;
+  // Wall re-renders every 500ms (ticker); memoized so a fresh subject object
+  // each render doesn't restart the panel's animation effect mid-play. Only
+  // changes identity when a new worse charge actually arrives.
   const panelSubject = useMemo<PanelSubject | null>(
     () =>
       subjectEvent && subjectEvent.vector && subjectEvent.neighbor_ids
@@ -763,7 +774,7 @@ export default function Wall() {
           >
             Auto Play {auto ? "On" : "Off"}
           </button>
-          <Metric label="Events / Sec" value={eps.toFixed(1)} />
+          <Metric label="Charges / Sec" value={eps.toFixed(1)} />
           <Metric label="p95 Latency" value={`${Math.round(p95)} ms`} />
           <Metric
             label="Total Points"
@@ -808,7 +819,7 @@ export default function Wall() {
       >
         {stories.map((s) => {
           const lead = s.events[0];
-          const top = s.events.reduce((m, e) => (e.score > m.score ? e : m), s.events[0]);
+          const top = topEvent(s);
           const active = s.id === playingId;
           // Age-based fade over the last STORY_FADE_MS of the TTL. The 500ms
           // ticker re-render steps the value; the CSS opacity transition smooths
@@ -829,8 +840,11 @@ export default function Wall() {
               }
             >
               <div className="flex items-baseline justify-between gap-3">
-                <span className="font-mono text-base font-semibold text-red-400">
-                  {top.score.toFixed(1)}x
+                <span
+                  className="font-mono text-base font-semibold text-red-400"
+                  title="Distance from typical, as a multiple of this customer's usual range"
+                >
+                  {top.score.toFixed(1)}×
                 </span>
                 <span className="truncate text-sm text-slate-300">
                   {top.merchant}, {top.city}
@@ -878,11 +892,11 @@ function AlertPanel({
   onClose: () => void;
 }) {
   const lead = story.events[0];
-  const top = story.events.reduce((m, e) => (e.score > m.score ? e : m), story.events[0]);
+  const top = topEvent(story);
   const multi = story.events.length > 1;
   const timings = lead.timings;
 
-  // "View Full Evidence" expands in place. The JSON is fetched once on first
+  // "Show Evidence" expands in place. The JSON is fetched once on first
   // expand (keyed by story via the remount), then collapse/expand only toggles.
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [evidence, setEvidence] = useState<Evidence | null>(null);
@@ -916,9 +930,12 @@ function AlertPanel({
           Alert
         </span>
         <div className="flex items-center gap-3">
-          <span className="font-mono text-3xl font-semibold text-red-400">
-            {top.score.toFixed(1)}x
-          </span>
+          <div className="text-right">
+            <span className="font-mono text-3xl font-semibold text-red-400">
+              {top.score.toFixed(1)}×
+            </span>
+            <p className="text-xs text-slate-400">this customer&apos;s usual range</p>
+          </div>
           <button
             onClick={onClose}
             aria-label="Close And Return To World View"
@@ -947,8 +964,11 @@ function AlertPanel({
                   <span>
                     {e.currency} {e.amount.toLocaleString("en-US")}, {e.city}
                   </span>
-                  <span className={e.alerted ? "text-red-400" : "text-slate-400"}>
-                    {e.score.toFixed(1)}x
+                  <span
+                    className={e.alerted ? "text-red-400" : "text-slate-400"}
+                    title="Distance from typical, as a multiple of this customer's usual range"
+                  >
+                    {e.score.toFixed(1)}×
                   </span>
                 </li>
               ))}
@@ -970,11 +990,11 @@ function AlertPanel({
           <h3 className="text-lg font-semibold text-slate-100">
             Caught In {Math.round(timings.total)} ms
           </h3>
-          <TimingRow label="History Lookup" ms={timings.scroll} />
-          <TimingRow label="Similarity Search" ms={timings.knn} />
-          <TimingRow label="Saving The Event" ms={timings.upsert} />
+          <TimingRow label="Customer History" ms={timings.scroll} />
+          <TimingRow label="Similar Charges Found" ms={timings.knn} />
+          <TimingRow label="Saving the Charge" ms={timings.upsert} />
           <p className="mt-1 text-base leading-snug text-slate-300">
-            Searchable immediately; the next charge scores against it.
+            Saved immediately — the next charge can already see it.
           </p>
         </section>
       ) : null}
@@ -987,7 +1007,7 @@ function AlertPanel({
           aria-expanded={evidenceOpen}
           className="inline-block self-start rounded-lg bg-red-500/15 px-4 py-2 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25"
         >
-          View Full Evidence
+          Show Evidence
         </button>
 
         {evidenceOpen ? (
@@ -1024,8 +1044,8 @@ function AlertPanel({
                 </table>
               </div>
               <p className="text-base text-slate-300">
-                Stored score {(evidence.stored.score ?? 0).toFixed(3)}; recomputed from those
-                same neighbors {evidence.recomputed.score.toFixed(3)}.
+                Stored ratio {(evidence.stored.score ?? 0).toFixed(3)}; recomputed from those
+                same similar charges {evidence.recomputed.score.toFixed(3)}.
               </p>
             </>
           ) : (
