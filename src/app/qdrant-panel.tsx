@@ -3,19 +3,19 @@
 // "How Qdrant Sees It": the teaching layer that runs beside a playing story. It
 // shows the same alerted event in the customer's vector space and animates the
 // scoring, in four beats:
-//   a. the customer's baseline scatter fades in (2-D PCA of their 31-d vectors),
+//   a. the customer's baseline scatter fades in (x = anomaly direction, y = PCA),
 //   b. the event drops in red,
 //   c. its 10 pinned neighbors light amber with connecting lines,
 //   d. the score arithmetic counts up: d_event, d_local, then the ratio vs 2.0.
 //
-// The PCA is the shared pca.ts helper (same basis the evidence-panel scatter
-// uses). Baseline vectors come from GET /api/baseline/[tenant]; if they have not
+// The projection is the pca.ts anomalyProjector.
+// Baseline vectors come from GET /api/baseline/[tenant]; if they have not
 // arrived by panel time, the arithmetic still plays without the cloud rather
 // than blocking the story. d_event / d_local are the values computed at scoring
 // time, carried on the alerted wire event.
 
 import { useEffect, useRef, useState } from "react";
-import { pcaProjector } from "@/lib/pca";
+import { anomalyProjector } from "@/lib/pca";
 
 // Mirrors score.ts ALERT_THRESHOLD. Hardcoded because score.ts pulls world.ts
 // (node:crypto) and cannot cross into the client bundle; the server already
@@ -94,8 +94,15 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
     function setup() {
       const baseline = baselineRef.current;
       if (!baseline || baseline.length === 0) return;
-      const project = pcaProjector(baseline.map((p) => p.vector));
       const nbSet = new Set(subject.neighbor_ids);
+      // x-axis = neighbors' centroid -> event (the direction the score measures),
+      // y-axis = the history's main spread. See anomalyProjector for why plain
+      // PCA put the red event visually on top of its amber neighbors.
+      const project = anomalyProjector(
+        baseline.map((p) => p.vector),
+        subject.vector,
+        baseline.filter((p) => nbSet.has(String(p.id))).map((p) => p.vector),
+      );
       projected = baseline.map((p) => ({
         xy: project(p.vector),
         isNeighbor: nbSet.has(String(p.id)),

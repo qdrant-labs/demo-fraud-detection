@@ -56,3 +56,31 @@ export function pcaProjector(vectors: number[][]): (v: number[]) => [number, num
     return [dot(c, pc1), dot(c, pc2)];
   };
 }
+
+// Projector whose x-axis IS the anomaly: the direction from the neighbors'
+// centroid to the event. The y-axis is the baseline's top principal component
+// orthogonal to that. Plain PCA hides an alert on screen: the fields that make
+// an event anomalous (new merchant, escalation) are near-constant in the
+// baseline, so the fitted components give them ~zero weight and the event
+// lands on top of its neighbors. Fixing the x-axis to the event's own
+// displacement makes the on-screen gap track the real 31-d distance.
+// Falls back to plain PCA when no neighbor vectors are available.
+export function anomalyProjector(
+  vectors: number[][],
+  event: number[],
+  neighborVecs: number[][],
+): (v: number[]) => [number, number] {
+  const dim = vectors[0]?.length ?? 0;
+  if (neighborVecs.length === 0) return pcaProjector(vectors);
+  const anchor = mean(neighborVecs, dim);
+  const dir = event.map((x, i) => x - anchor[i]);
+  if (Math.sqrt(dot(dir, dir)) < 1e-9) return pcaProjector(vectors);
+  const ax = normalize(dir);
+  const mu = mean(vectors, dim);
+  const centered = vectors.map((v) => v.map((x, i) => x - mu[i]));
+  const ay = powerIteration(centered, dim, ax);
+  return (v: number[]) => {
+    const c = v.map((x, i) => x - mu[i]);
+    return [dot(c, ax), dot(c, ay)];
+  };
+}
