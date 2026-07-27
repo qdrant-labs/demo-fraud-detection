@@ -9,6 +9,7 @@
 // therefore emit the same IDs, and the client's Set-dedupe collapses them with
 // no drift.
 
+import type { Contrast } from "@/lib/explain";
 import { scoreEvent, type StageTimings } from "@/lib/score";
 import { COLLECTION, deleteStaleScored, ensureCollection, qdrant } from "@/lib/qdrant";
 import {
@@ -89,6 +90,7 @@ interface WallEvent {
   neighbor_ids?: (string | number)[];
   d_event?: number;
   d_local?: number;
+  contrasts?: Contrast[];
 }
 
 // The customer's home city, derived the same way the scorer's profile lookup is
@@ -205,6 +207,7 @@ export async function GET(req: Request): Promise<Response> {
                       neighbor_ids: s.neighbors.map((n) => n.id),
                       d_event: s.d_event,
                       d_local: s.d_local,
+                      contrasts: s.contrasts,
                     }
                   : {}),
               });
@@ -266,6 +269,7 @@ export async function GET(req: Request): Promise<Response> {
                     : [],
                   d_event: Number(pl.d_event ?? 0),
                   d_local: Number(pl.d_local ?? 0),
+                  contrasts: Array.isArray(pl.contrasts) ? (pl.contrasts as Contrast[]) : [],
                 }
               : {}),
           });

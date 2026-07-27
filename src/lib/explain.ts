@@ -95,13 +95,32 @@ function facts(tx: Transaction, context: PriorTx[]) {
   return { prior, burstCount, burstMinutes, kmh, travelMinutes, prevCity, amountRatio, ladderRatio, rises };
 }
 
-export function explain(args: {
+// One "this charge vs this customer" row for the alert card. `usual` renders
+// behind a "usually" prefix in the UI, so it holds only the behavior itself.
+export interface Contrast {
+  field: string;
+  event: string;
+  usual: string;
+}
+
+function money(currency: string, n: number): string {
+  return `${currency} ${n >= 10 ? Math.round(n) : round1(n)}`;
+}
+
+// Home-city local clock, using the same whole-hour longitude offset the world
+// uses to place tenant active windows (world.ts toUtcHour).
+function localParts(tsMs: number, lonOffset: number) {
+  const d = new Date(tsMs + lonOffset * 3_600_000);
+  return { hour: d.getUTCHours(), hhmm: `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}` };
+}
+
+export function explainAlert(args: {
   tx: Transaction;
   eventVector: number[];
   centroid: number[];
   context: PriorTx[];
   profile: TenantProfile;
-}): string {
+}): { explanation: string; contrasts: Contrast[] } {
   const { tx, eventVector, centroid, context, profile } = args;
   const f = facts(tx, context);
   const n = f.prior.length;
@@ -120,28 +139,188 @@ export function explain(args: {
   const recentHot = top === "recent";
   const impossibleTravel = recentHot && recentDim === "impossibleTravel";
 
+  // --- Headline: one template keyed on the top deviating block. -------------
+  // `headlineKey` names the story the headline already tells, so the contrast
+  // rows below never repeat it.
+  let explanation: string;
+  let headlineKey: string;
+
   // Impossible travel gets its own line: the speed between the two charges is
   // the whole story, so show it. Falls through to the geo line when there is no
   // prior to measure against.
   if (impossibleTravel && f.prevCity && f.kmh > 0) {
     const kmh = Math.round(f.kmh).toLocaleString("en-US");
-    return `Charge in ${tx.city} ${f.travelMinutes} min after ${f.prevCity} — ${kmh} km/h apart`;
-  }
-
-  if (top === "geo" || impossibleTravel) {
+    explanation = `Charge in ${tx.city} ${f.travelMinutes} min after ${f.prevCity} — ${kmh} km/h apart`;
+    headlineKey = "travel";
+  } else if (top === "geo" || impossibleTravel) {
     const cp = tx.card_present ? "card-present" : "online";
     // The score badge and ratio cell already show the multiple; no second clause.
-    return `First ${cp} charge outside ${profile.homeCity.name} in ${n} transactions`;
-  }
-
-  if (recentHot && recentDim === "burstCount") {
-    return `${f.burstCount} charges at ${tx.merchant} inside ${f.burstMinutes} minutes, each around ${tx.currency} ${tx.amount}`;
-  }
-
-  if (top === "amount" || (recentHot && (recentDim === "ladder" || recentDim === "amountRatio"))) {
+    explanation = `First ${cp} charge outside ${profile.homeCity.name} in ${n} transactions`;
+    headlineKey = "place";
+  } else if (recentHot && recentDim === "burstCount") {
+    explanation = `${f.burstCount} charges at ${tx.merchant} inside ${f.burstMinutes} minutes, each around ${tx.currency} ${tx.amount}`;
+    headlineKey = "pace";
+  } else if (top === "amount" || (recentHot && (recentDim === "ladder" || recentDim === "amountRatio"))) {
     const rises = f.rises >= 2 ? `, ${f.rises} rises in a row` : "";
-    return `Amount ${round1(f.amountRatio)}x this customer's typical spend at ${tx.merchant}${rises}`;
+    explanation = `Amount ${round1(f.amountRatio)}x this customer's typical spend at ${tx.merchant}${rises}`;
+    headlineKey = "amount";
+  } else {
+    explanation = `Unlike this customer's normal transactions in several ways at once`;
+    headlineKey = "";
   }
 
-  return `Unlike this customer's normal transactions in several ways at once`;
+  // --- Contrast rows: this charge vs this customer's normal. ----------------
+  // Candidates ranked by the same deviation signal that picked the headline;
+  // the recent-history block competes as its individual signals. Each builder
+  // states the abnormal fact and the normal fact it breaks; builders return
+  // null when their story does not hold up in the raw numbers, so a noisy
+  // block deviation never produces an unsupported sentence.
+  const lonOffset = Math.round(profile.homeCity.lon / 15);
+  const nowMs = Date.parse(tx.ts);
+  const homeKm = haversineKm(profile.homeCity.lat, profile.homeCity.lon, tx.lat, tx.lon);
+  const amounts = f.prior.map((p) => p.amount).sort((a, b) => a - b);
+  const median = amounts.length ? amounts[Math.floor(amounts.length / 2)] : tx.amount;
+
+  // Median minutes between the customer's recent consecutive charges.
+  const gaps: number[] = [];
+  for (let i = 1; i < f.prior.length; i++) {
+    gaps.push((Date.parse(f.prior[i].ts) - Date.parse(f.prior[i - 1].ts)) / 60_000);
+  }
+  gaps.sort((a, b) => a - b);
+  const medianGapMin = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+  const gapText =
+    medianGapMin >= 120
+      ? `one charge every ${Math.round(medianGapMin / 60)} hours`
+      : medianGapMin >= 1
+        ? `one charge every ${Math.round(medianGapMin)} minutes`
+        : "";
+
+  const local = localParts(nowMs, lonOffset);
+  const startLocal = (profile.activeHourStart + lonOffset + 24) % 24;
+  const endLocal = (profile.activeHourEnd + lonOffset + 24) % 24;
+  const inWindow =
+    startLocal <= endLocal
+      ? local.hour >= startLocal && local.hour <= endLocal
+      : local.hour >= startLocal || local.hour <= endLocal;
+
+  const builders: Record<string, () => Contrast | null> = {
+    newMerchant: () =>
+      profile.merchants.some((m) => m.name === tx.merchant)
+        ? null
+        : {
+            field: "Merchant",
+            event: `first charge at ${tx.merchant}`,
+            usual: `one of ${profile.merchants.length} known merchants`,
+          },
+    pace: () =>
+      f.burstCount >= 3 && gapText
+        ? {
+            field: "Pace",
+            event: `${f.burstCount} charges in ${f.burstMinutes} min`,
+            usual: gapText,
+          }
+        : null,
+    travel: () =>
+      f.prevCity && f.kmh > 500
+        ? {
+            field: "Travel",
+            event: `${tx.city} ${f.travelMinutes} min after ${f.prevCity}`,
+            usual: `charges near ${profile.homeCity.name}`,
+          }
+        : null,
+    place: () =>
+      homeKm >= 100
+        ? {
+            field: "Place",
+            event: `${tx.city}, ${Math.round(homeKm).toLocaleString("en-US")} km from home`,
+            usual: `near ${profile.homeCity.name}`,
+          }
+        : null,
+    amount: () => {
+      if (f.rises >= 2) {
+        return {
+          field: "Amount",
+          event: `${f.rises} rising charges in a row at ${tx.merchant}`,
+          usual: `steady near ${money(tx.currency, median)}`,
+        };
+      }
+      if (f.amountRatio >= 1.5 || f.amountRatio <= 0.5) {
+        return {
+          field: "Amount",
+          event: money(tx.currency, tx.amount),
+          usual: `near ${money(tx.currency, median)}`,
+        };
+      }
+      return null;
+    },
+    time: () =>
+      inWindow
+        ? null
+        : {
+            field: "Time",
+            event: `${local.hhmm} in ${profile.homeCity.name}`,
+            usual: `active ${String(startLocal).padStart(2, "0")}:00-${String(endLocal).padStart(2, "0")}:00`,
+          },
+    channel: () => {
+      if (!tx.card_present && profile.onlineShare < 0.35)
+        return { field: "Channel", event: "online", usual: "in person" };
+      if (tx.card_present && profile.onlineShare > 0.65)
+        return { field: "Channel", event: "in person", usual: "online" };
+      return null;
+    },
+    currency: () =>
+      tx.currency !== profile.homeCity.currency
+        ? { field: "Currency", event: tx.currency, usual: profile.homeCity.currency }
+        : null,
+    category: () =>
+      profile.categories.includes(tx.merchant_cat)
+        ? null
+        : {
+            field: "Category",
+            event: tx.merchant_cat.replace(/_/g, " "),
+            usual: profile.categories.map((c) => c.replace(/_/g, " ")).join(", "),
+          },
+  };
+
+  // Rank: block deviations plus the recent block's individual signals.
+  const blockToStory: Record<string, string> = {
+    amount: "amount",
+    timeOfDay: "time",
+    geo: "place",
+    category: "category",
+    channel: "channel",
+    cardPresent: "channel",
+    currency: "currency",
+    newMerchant: "newMerchant",
+  };
+  const recentToStory: Record<string, string> = {
+    burstCount: "pace",
+    impossibleTravel: "travel",
+    amountRatio: "amount",
+    ladder: "amount",
+  };
+  const ranked: { key: string; dev: number }[] = [];
+  for (const { name, dev } of devs) {
+    if (name === "recent" || name === "dayOfWeek") continue;
+    const key = blockToStory[name];
+    if (key) ranked.push({ key, dev });
+  }
+  for (const [name, i] of Object.entries(RECENT_DIMS)) {
+    const key = recentToStory[name];
+    if (key) ranked.push({ key, dev: Math.abs(eventVector[i] - centroid[i]) });
+  }
+  ranked.sort((a, b) => b.dev - a.dev);
+
+  const contrasts: Contrast[] = [];
+  const used = new Set<string>([headlineKey]);
+  const floor = (ranked[0]?.dev ?? 0) * 0.2;
+  for (const { key, dev } of ranked) {
+    if (contrasts.length >= 3) break;
+    if (used.has(key) || dev < floor) continue;
+    const row = builders[key]?.();
+    used.add(key);
+    if (row) contrasts.push(row);
+  }
+
+  return { explanation, contrasts };
 }

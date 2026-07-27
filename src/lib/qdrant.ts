@@ -5,6 +5,7 @@
 // tenant by a tenant-keyed payload index (multitenancy).
 
 import { QdrantClient } from "@qdrant/js-client-rest";
+import type { Contrast } from "./explain";
 import type { RecentHistory } from "./features";
 import { FEATURE_DIM } from "./features";
 import type { Transaction } from "./world";
@@ -185,6 +186,8 @@ export interface ScoredPayload {
   score: number;
   alerted: boolean;
   explanation: string;
+  // Alerts only: the "vs this customer's normal" rows shown on the story card.
+  contrasts?: Contrast[];
   neighbor_ids: (string | number)[]; // the 10 neighbors used, in ranked order
   d_event: number; // mean event-to-neighbor distance
   d_local: number; // mean neighbor-to-centroid distance

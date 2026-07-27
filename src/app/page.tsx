@@ -52,6 +52,8 @@ interface WallEvent {
   neighbor_ids?: (string | number)[];
   d_event?: number;
   d_local?: number;
+  // "This charge vs this customer's normal" rows (shape mirrors explain.ts Contrast).
+  contrasts?: { field: string; event: string; usual: string }[];
 }
 
 // A live map ping, positioned in geographic coordinates and faded by age.
@@ -829,7 +831,6 @@ export default function Wall() {
         }`}
       >
         {stories.map((s) => {
-          const lead = s.events[0];
           const top = topEvent(s);
           const active = s.id === playingId;
           // Age-based fade over the last STORY_FADE_MS of the TTL. The 500ms
@@ -862,7 +863,7 @@ export default function Wall() {
                 </span>
               </div>
               <p className="mt-0.5 truncate text-sm leading-snug text-slate-100">
-                {lead.explanation}
+                {top.explanation}
               </p>
             </button>
           );
@@ -959,10 +960,26 @@ function AlertPanel({
 
       {/* b. One-liner, who and where, charge trail */}
       <div>
-        <p className="text-2xl font-semibold leading-snug text-slate-50">{lead.explanation}</p>
+        {/* The top-scored event tells the fullest story: in a burst the last
+            charge has seen the whole run form, the first has seen none of it. */}
+        <p className="text-2xl font-semibold leading-snug text-slate-50">{top.explanation}</p>
         <p className="mt-2 text-base text-slate-300">
           Customer {story.tenant_id}, home {story.home.city}
         </p>
+
+        {/* This charge vs this customer's normal: what the alert broke, and the
+            behavior it broke. Same legibility floor as the teaching steps. */}
+        {top.contrasts?.length ? (
+          <ul className="mt-3 space-y-1 border-l-2 border-slate-600/60 pl-3">
+            {top.contrasts.map((c) => (
+              <li key={c.field} className="text-base leading-snug">
+                <span className="text-slate-500">{c.field}: </span>
+                <span className="font-medium text-red-300">{c.event}</span>
+                <span className="text-slate-400"> — usually {c.usual}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
 
         {multi ? (
           <div className="mt-3">

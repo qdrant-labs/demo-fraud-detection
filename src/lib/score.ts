@@ -10,7 +10,7 @@
 // it exactly.
 
 import { encode, recentHistory, type PriorTx, type RecentHistory } from "./features";
-import { explain } from "./explain";
+import { explainAlert, type Contrast } from "./explain";
 import {
   COLLECTION,
   CONTEXT_LIMIT,
@@ -117,6 +117,8 @@ export interface ScoredEvent {
   neighbors: Neighbor[];
   recent: RecentHistory;
   explanation: string;
+  // "This charge vs this customer's normal", up to three rows for the alert card.
+  contrasts: Contrast[];
   // The 31-d event vector, already computed above. Carried out so the wall can
   // ship it to the "How Qdrant Sees It" panel without a second encode. Additive:
   // the score is unchanged.
@@ -283,15 +285,16 @@ export async function scoreEvent(
 
   const alerted = score > ALERT_THRESHOLD && !learning;
 
-  const explanation = noEligibleNeighbors
-    ? "Not enough established history to score"
-    : explain({
+  const explained = noEligibleNeighbors
+    ? { explanation: "Not enough established history to score", contrasts: [] as Contrast[] }
+    : explainAlert({
         tx,
         eventVector,
         centroid,
         context: priors,
         profile,
       });
+  const { explanation, contrasts } = explained;
 
   // (3) UPSERT the scored event so it is immediately searchable — no refresh
   // cycle. wait:true so a burst's next event sees this one when it scores. The
@@ -318,6 +321,8 @@ export async function scoreEvent(
           score,
           alerted,
           explanation,
+          // Alerts only: replayed by the story card; non-alert payloads stay lean.
+          ...(alerted ? { contrasts } : {}),
           neighbor_ids: neighborIds,
           d_event,
           d_local,
@@ -344,6 +349,7 @@ export async function scoreEvent(
     neighbors,
     recent,
     explanation,
+    contrasts,
     vector: eventVector,
   };
 }
