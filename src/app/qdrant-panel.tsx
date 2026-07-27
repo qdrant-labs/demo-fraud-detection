@@ -235,6 +235,9 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
         ref={canvasRef}
         className="w-full rounded-lg border border-slate-700/60 bg-slate-900/50"
       />
+      <p className="-mt-2 text-sm text-slate-500">
+        Further right = further from this customer&apos;s usual behavior
+      </p>
 
       <div className="grid grid-cols-3 gap-2">
         <Cell

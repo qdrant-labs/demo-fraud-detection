@@ -31,6 +31,7 @@ import AttackPanel from "./attack-panel";
 interface WallEvent {
   id: string | number;
   tenant_id: string;
+  ts: string;
   amount: number;
   currency: string;
   merchant: string;
@@ -82,6 +83,49 @@ interface Story {
 // panel's ratio used to drift apart on multi-charge stories.
 function topEvent(story: Story): WallEvent {
   return story.events.reduce((m, e) => (e.score > m.score ? e : m), story.events[0]);
+}
+
+// The score as a filled meter with a tick at the alert threshold, so it reads
+// as "how far past the line" instead of a bare multiplier. The track spans
+// 0-METER_MAX; hotter scores clamp the fill and the number carries the rest.
+const METER_MAX = 6;
+const METER_THRESHOLD = 2; // display twin of qdrant-panel's THRESHOLD
+function ScoreMeter({ score, size = "sm" }: { score: number; size?: "sm" | "lg" }) {
+  const fill = Math.min(score / METER_MAX, 1) * 100;
+  const tick = (METER_THRESHOLD / METER_MAX) * 100;
+  const dims = size === "lg" ? "h-3 w-36" : "h-2.5 w-24";
+  return (
+    <span
+      className={`relative inline-block ${dims} overflow-hidden rounded-full bg-slate-700/60 align-middle`}
+      title="How unusual: distance from typical as a multiple of this customer's usual range. Alerts past 2."
+    >
+      <span
+        className="absolute inset-y-0 left-0 rounded-full bg-red-500/90"
+        style={{ width: `${fill}%` }}
+      />
+      <span
+        className="absolute inset-y-0 w-0.5 bg-slate-200/80"
+        style={{ left: `${tick}%` }}
+      />
+    </span>
+  );
+}
+
+// One-line summary for a same-merchant, same-city burst of similar amounts
+// (the card-testing shape). Null when the rows differ enough to earn a list:
+// different cities (geo-hop) or a widening amount spread (escalating amounts).
+function burstSummary(events: WallEvent[]): string | null {
+  if (events.length < 4) return null;
+  const [first] = events;
+  if (!events.every((e) => e.merchant === first.merchant && e.city === first.city)) return null;
+  const amounts = events.map((e) => e.amount);
+  const min = Math.min(...amounts);
+  const max = Math.max(...amounts);
+  if (min <= 0 || max / min >= 5) return null;
+  const times = events.map((e) => Date.parse(e.ts));
+  const spanS = Math.round((Math.max(...times) - Math.min(...times)) / 1000);
+  const span = spanS >= 120 ? `${Math.round(spanS / 60)} min` : `${Math.max(spanS, 1)} s`;
+  return `${first.currency} ${min.toLocaleString("en-US")}–${max.toLocaleString("en-US")} each, all in ${span}`;
 }
 
 type Conn = "connecting" | "live" | "reconnecting";
@@ -851,12 +895,12 @@ export default function Wall() {
                   : "border-red-500/40 bg-red-950/85 hover:bg-red-900/80")
               }
             >
-              <div className="flex items-baseline justify-between gap-3">
-                <span
-                  className="font-mono text-base font-semibold text-red-400"
-                  title="Distance from typical, as a multiple of this customer's usual range"
-                >
-                  {top.score.toFixed(1)}×
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex items-center gap-1.5">
+                  <ScoreMeter score={top.score} />
+                  <span className="font-mono text-base font-semibold text-red-400">
+                    {top.score.toFixed(1)}
+                  </span>
                 </span>
                 <span className="truncate text-sm text-slate-300">
                   {top.merchant}, {top.city}
@@ -943,10 +987,15 @@ function AlertPanel({
         </span>
         <div className="flex items-center gap-3">
           <div className="text-right">
-            <span className="font-mono text-3xl font-semibold text-red-400">
-              {top.score.toFixed(1)}×
+            <span className="flex items-center gap-2">
+              <ScoreMeter score={top.score} size="lg" />
+              <span className="font-mono text-3xl font-semibold text-red-400">
+                {top.score.toFixed(1)}
+              </span>
             </span>
-            <p className="text-xs text-slate-400">this customer&apos;s usual range</p>
+            <p className="text-xs text-slate-400">
+              times this customer&apos;s usual range &middot; alerts past the 2.0 mark
+            </p>
           </div>
           <button
             onClick={onClose}
@@ -986,21 +1035,28 @@ function AlertPanel({
             <p className="text-base text-slate-300">
               {story.events.length} Charges At {lead.merchant}
             </p>
-            <ul className="mt-1 space-y-0.5 font-mono text-base text-slate-300">
-              {story.events.slice(0, 6).map((e) => (
-                <li key={String(e.id)} className="flex justify-between gap-4">
-                  <span>
-                    {e.currency} {e.amount.toLocaleString("en-US")}, {e.city}
-                  </span>
-                  <span
-                    className={e.alerted ? "text-red-400" : "text-slate-400"}
-                    title="Distance from typical, as a multiple of this customer's usual range"
-                  >
-                    {e.score.toFixed(1)}×
-                  </span>
-                </li>
-              ))}
-            </ul>
+            {burstSummary(story.events) ? (
+              // A same-merchant, same-city burst of similar amounts reads as six
+              // near-identical rows; one line says more. Trails whose rows differ
+              // (cities, escalating amounts) keep the per-charge list.
+              <p className="mt-1 font-mono text-base text-slate-300">{burstSummary(story.events)}</p>
+            ) : (
+              <ul className="mt-1 space-y-0.5 font-mono text-base text-slate-300">
+                {story.events.slice(0, 6).map((e) => (
+                  <li key={String(e.id)} className="flex justify-between gap-4">
+                    <span>
+                      {e.currency} {e.amount.toLocaleString("en-US")}, {e.city}
+                    </span>
+                    <span
+                      className={e.alerted ? "text-red-400" : "text-slate-400"}
+                      title="Distance from typical, as a multiple of this customer's usual range"
+                    >
+                      {e.score.toFixed(1)}×
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         ) : (
           <p className="mt-3 font-mono text-base text-slate-200">

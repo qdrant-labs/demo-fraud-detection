@@ -117,6 +117,7 @@ export async function GET(
     meta,
     alerted: Boolean(pl.alerted),
     explanation: String(pl.explanation ?? ""),
+    contrasts: Array.isArray(pl.contrasts) ? pl.contrasts : [],
     stored: { score: storedScore, d_event: storedDEvent, d_local: storedDLocal },
     recomputed,
     neighbor_ids: neighborIds.map(String),
