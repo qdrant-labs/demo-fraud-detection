@@ -231,6 +231,12 @@ export default function Wall() {
   const [conn, setConn] = useState<Conn>("connecting");
   const [points, setPoints] = useState<number | null>(null);
   const [eps, setEps] = useState(0);
+  // Decision latency: the two reads that must finish before an approve/decline,
+  // with the upsert left out (a card authorization has a hard end-to-end budget
+  // and the write is post-decision persistence). p50 and p95, not p99: the
+  // rolling buffer holds LATENCY_CAP observations, so p99 here would be the
+  // third-worst sample. The controlled p99 lives in the scale benchmark.
+  const [p50, setP50] = useState(0);
   const [p95, setP95] = useState(0);
   // Ticker-driven clock for the queue's age-based fade (render-safe time source).
   const [tick, setTick] = useState(0);
@@ -328,7 +334,8 @@ export default function Wall() {
       });
 
       eventTimesRef.current.push(Date.now());
-      if (ev.timings) latencyRef.current.push(ev.timings.total);
+      // scroll + knn, not total: the buffer feeds the decision-latency metric.
+      if (ev.timings) latencyRef.current.push(ev.timings.scroll + ev.timings.knn);
       if (latencyRef.current.length > LATENCY_CAP) latencyRef.current.shift();
 
       if (ev.alerted) enqueueStory(ev);
@@ -450,6 +457,7 @@ export default function Wall() {
       eventTimesRef.current = eventTimesRef.current.filter((ts) => ts >= cutoff);
       setEps(eventTimesRef.current.length / (EPS_WINDOW_MS / 1000));
       const sorted = [...latencyRef.current].sort((a, b) => a - b);
+      setP50(pct(sorted, 50));
       setP95(pct(sorted, 95));
 
       // Expire old queue entries. The pinned story is exempt so a viewer who is
@@ -775,7 +783,10 @@ export default function Wall() {
             Auto Play {auto ? "On" : "Off"}
           </button>
           <Metric label="Charges / Sec" value={eps.toFixed(1)} />
-          <Metric label="p95 Latency" value={`${Math.round(p95)} ms`} />
+          <Metric
+            label="Decision p50 / p95"
+            value={`${Math.round(p50)} / ${Math.round(p95)} ms`}
+          />
           <Metric
             label="Total Points"
             value={points === null ? "-" : points.toLocaleString("en-US")}
@@ -988,13 +999,14 @@ function AlertPanel({
       {timings ? (
         <section className="flex flex-col gap-2">
           <h3 className="text-lg font-semibold text-slate-100">
-            Caught In {Math.round(timings.total)} ms
+            Decided In {Math.round(timings.scroll + timings.knn)} ms
           </h3>
           <TimingRow label="Customer History" ms={timings.scroll} />
           <TimingRow label="Similar Charges Found" ms={timings.knn} />
           <TimingRow label="Saving the Charge" ms={timings.upsert} />
           <p className="mt-1 text-base leading-snug text-slate-300">
-            Saved immediately — the next charge can already see it.
+            The first two rows are the decision. Saving happens after it, and the
+            next charge can already see the saved one.
           </p>
         </section>
       ) : null}

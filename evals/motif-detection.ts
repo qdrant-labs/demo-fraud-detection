@@ -56,6 +56,13 @@ function placementRng(key: string): () => number {
   };
 }
 
+// Event-level fraud prevalence to project the measured rates onto. This eval's
+// own stream runs near 5%, which is two orders of magnitude above real card
+// fraud, so the precision it measures does not survive the move to production
+// traffic. 0.1% is the rate the projection below assumes; override to run a
+// sensitivity.
+const PREVALENCE = Number(process.env.FRAUD_PREVALENCE ?? 0.001);
+
 const TENANT_COUNT = 60; // one distinct tenant per fraud sequence
 const PER_MOTIF = 20;
 const MOTIFS: Exclude<Motif, "none">[] = ["card_testing", "geo_hop", "ladder"];
@@ -188,6 +195,47 @@ async function main() {
     console.log(
       `Precision (alerted events fraud-labeled): ${tp}/${totalAlerted} = ${precision.toFixed(3)}  (gate >= 0.60)`,
     );
+
+    // --- Rates and projection to production prevalence ----------------------
+    // The precision above is measured on a stream where ~5% of events are fraud.
+    // Real card fraud runs near 0.1% of authorizations, and precision moves with
+    // prevalence while the two rates below do not. So report the rates, then
+    // project them onto a million authorizations at PREVALENCE.
+    //
+    // Two precision views come out of the same data, and they differ because
+    // their denominators differ: one alert per fraud EVENT, versus one case per
+    // fraud SEQUENCE. Both are printed, each next to its denominator. The
+    // sequence view needs sequence prevalence, which is event prevalence divided
+    // by the mean sequence length.
+    const bgFpRate = fp + tn > 0 ? fp / (fp + tn) : 0;
+    const eventRecall = tp + fn > 0 ? tp / (tp + fn) : 0;
+    const meanSeqLen = fraudEvents.length / sequences.length;
+
+    const N = 1_000_000;
+    const fraudPerM = N * PREVALENCE;
+    const falseAlertsPerM = N * (1 - PREVALENCE) * bgFpRate;
+    const trueAlertsPerM = fraudPerM * eventRecall;
+    const projectedPrecision =
+      trueAlertsPerM + falseAlertsPerM > 0
+        ? trueAlertsPerM / (trueAlertsPerM + falseAlertsPerM)
+        : 0;
+    const casesPerM = fraudPerM / meanSeqLen;
+    const casesDetectedPerM = casesPerM * recall;
+
+    console.log("\nMeasured rates (this run):");
+    console.log(`  synthetic-background false-positive rate  ${fp}/${fp + tn} = ${(bgFpRate * 100).toFixed(3)}% per normal event`);
+    console.log(`  per-event recall                          ${tp}/${tp + fn} = ${eventRecall.toFixed(3)}`);
+    console.log(`  per-sequence recall                       ${detected}/${sequences.length} = ${recall.toFixed(3)}`);
+    console.log(`  mean sequence length                      ${fraudEvents.length}/${sequences.length} = ${meanSeqLen.toFixed(2)} events`);
+    console.log(`  this run's event prevalence               ${tp + fn}/${all.length} = ${((tp + fn) / all.length * 100).toFixed(1)}%`);
+
+    console.log(`\nProjected to 1M authorizations at ${(PREVALENCE * 100).toFixed(2)}% event prevalence:`);
+    console.log(`  false alerts        ${Math.round(falseAlertsPerM).toLocaleString("en-US")}  (${N - fraudPerM} normal events at the rate above)`);
+    console.log(`  true alerts         ${Math.round(trueAlertsPerM).toLocaleString("en-US")}  (${fraudPerM} fraud events at per-event recall)`);
+    console.log(`  per-event precision ${projectedPrecision.toFixed(3)}`);
+    console.log(`  case view           ${Math.round(casesDetectedPerM)} of ${Math.round(casesPerM)} fraud cases detected, against those false alerts`);
+    console.log("  The false-positive rate is measured on synthetic background traffic, not");
+    console.log("  bank authorizations, so this projection is an estimate conditional on that rate.");
 
     // --- Threshold sweep ----------------------------------------------------
     // Recompute the metrics at a range of thresholds from the already-scored

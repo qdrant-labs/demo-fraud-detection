@@ -24,19 +24,29 @@ import { baselineTransactions, makeProfile, WORLD_SEED, type Transaction } from 
 // Called with [] it just creates the empty collection + indexes (cold start).
 // `seed` picks the world: a held-out motif run seeds baselines from the same seed
 // its scored events derive from, so profiles and baselines stay coherent.
-export async function seedTenants(indices: number[], seed: string = WORLD_SEED): Promise<void> {
+// `days` / `txScale` are forwarded to baselineTransactions; the scale benchmark
+// uses them to seed a longer per-tenant history. `wait` defaults to true so an
+// eval's next read sees everything it just wrote; the benchmark sets it false to
+// load millions of points without a round trip per batch, and waits for green
+// once at the end instead. Omit opts and every caller gets today's world.
+export async function seedTenants(
+  indices: number[],
+  seed: string = WORLD_SEED,
+  opts?: { days?: number; txScale?: number; wait?: boolean },
+): Promise<void> {
   await ensureCollection();
   const BATCH = 2000;
+  const wait = opts?.wait ?? true;
   let batch: ReturnType<typeof pointFor>[] = [];
   const flush = async () => {
     if (batch.length === 0) return;
-    await qdrant.upsert(COLLECTION, { wait: true, points: batch });
+    await qdrant.upsert(COLLECTION, { wait, points: batch });
     batch = [];
   };
 
   for (const idx of indices) {
     const profile = makeProfile(idx, seed);
-    const baseline = baselineTransactions(profile, seed); // oldest-first
+    const baseline = baselineTransactions(profile, seed, opts); // oldest-first
     for (let i = 0; i < baseline.length; i++) {
       const tx = baseline[i];
       const window = baseline.slice(Math.max(0, i - CONTEXT_LIMIT), i);

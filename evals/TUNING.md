@@ -85,3 +85,62 @@ thr    seqRecall  card_testing  geo_hop  ladder   precision
 | 4 | Dim 30 = escalation chain count | 0.967 / 0.944 at 2.00: shipped |
 
 Weight or scaling changes alter every vector: the seeded baseline was re-seeded in place after round 4 (deterministic IDs overwrite; stale scored events deleted).
+
+## Re-measured 2026-07-27 (these are the current numbers)
+
+Run before the bank whitepaper, to check that the multitenant HNSW config added to `ensureCollectionNow()` (`hnsw_config: { m: 0, payload_m: 16 }`) left the tuned results alone. It did, and the run also showed that the numbers recorded above are no longer reproducible.
+
+### The HNSW config changes nothing here
+
+The default-seed eval was run twice on the same day, once with the multitenant config and once with the collection created the old way. Both runs produced byte-identical confusion tables, per-motif recall and threshold sweeps:
+
+```
+                 alerted   not alerted
+  fraud-labeled      156           104
+  motif=none          51          4650
+Recall (sequences): 50/60 = 0.833   per-motif: card_testing 1.00 | geo_hop 1.00 | ladder 0.50
+Precision:          156/207 = 0.754
+```
+
+The reason is size. A collection this small never builds a vector graph under either config: Qdrant indexes a segment once it passes `indexing_threshold` (20 MB by default), and 33k points of 31-d float32 is about 4 MB. Both configurations therefore run an exact scan over the tenant's filtered points and return the same neighbours. The config is still the one to ship — it is what the multitenancy docs prescribe, and it is what takes effect once a collection is large enough to index — but no result in this file depends on it.
+
+### Held-out seed, `fraud-watch-holdout-v1`
+
+```
+                 alerted   not alerted
+  fraud-labeled      169            91
+  motif=none          34          4666
+Recall (sequences): 57/60 = 0.950   per-motif: card_testing 1.00 | geo_hop 1.00 | ladder 0.85
+Precision:          169/203 = 0.833
+```
+
+### Rates, and what they project to
+
+| | default seed | holdout |
+|---|---|---|
+| synthetic-background false-positive rate | 51/4,701 = 1.085% | 34/4,700 = 0.723% |
+| per-event recall | 156/260 = 0.600 | 169/260 = 0.650 |
+| per-sequence recall | 50/60 = 0.833 | 57/60 = 0.950 |
+| mean sequence length | 4.33 events | 4.33 events |
+| this run's event prevalence | 260/4,961 = 5.2% | 260/4,960 = 5.2% |
+
+The eval's own prevalence is 5.2%; real card fraud runs near 0.1% of authorizations, and precision moves with prevalence while the two rates above do not. Projected onto 1M authorizations at 0.1% event prevalence (printed by the eval itself):
+
+| | default seed | holdout |
+|---|---|---|
+| false alerts | 10,838 | 7,227 |
+| true alerts | 600 | 650 |
+| per-event precision | 0.052 | 0.083 |
+| cases detected | 192 of 231 | 219 of 231 |
+
+The false-positive rate is measured on synthetic background traffic, not on bank authorizations, so these projections are estimates conditional on that rate. Quote them with that sentence attached.
+
+### The numbers above this section are not reproducible
+
+The post-interleaving results recorded earlier (default 0.800 / 0.843, holdout 0.817 / 0.864) do not come back from the committed code. The cause is not in the scoring path: `git diff dcd06e1..HEAD -- src/lib/features.ts src/lib/score.ts src/lib/world.ts` is comments, a `city` field on `PriorTx`, and the `persist` option, none of which touch the arithmetic. It is not the HNSW config either, per the control above. The generated stream itself differs — the holdout run built 4,700 background events where the earlier record says 4,703 — and world generation takes no input but the seed, so the earlier numbers were measured against a world that was never committed.
+
+Treat this section as the record. Both seeds still clear the gates at the shipped threshold 2.0, and nothing was retuned.
+
+### Ladder recall stays as measured
+
+Ladder sits at 0.50 (default) and 0.85 (holdout), against 1.00 for card testing and impossible travel on both seeds. The explanation from the interleaving round still holds: a ladder step competes with fresh background traffic at the same merchant for the 30 recent-history slots, so its escalation chain is shorter by the time it scores. Publish the number with that explanation rather than retuning for it.

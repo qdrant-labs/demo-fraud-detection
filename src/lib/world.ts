@@ -292,14 +292,24 @@ function genTransaction(
 
 // The tenant's baseline: 300-800 transactions over the ~90 days before EPOCH,
 // clustered inside its active hours. Returned sorted oldest-first.
+//
+// `opts` exists for the scale benchmark, which needs a longer per-tenant history
+// than the demo ships. Both knobs move together on purpose: stretching `days`
+// alone would keep txCount fixed and thin per-day density, which shifts the
+// recent-history features (rh_mins, rh_same10m) and changes the vectors. Scale
+// txScale by the same factor as days to hold per-day behaviour constant.
+// Defaults reproduce the shipped world exactly.
 export function baselineTransactions(
   profile: TenantProfile,
   seed: string = WORLD_SEED,
+  opts?: { days?: number; txScale?: number },
 ): Transaction[] {
+  const days = opts?.days ?? 90;
+  const txCount = Math.round(profile.txCount * (opts?.txScale ?? 1));
   const out: Transaction[] = [];
-  for (let i = 0; i < profile.txCount; i++) {
+  for (let i = 0; i < txCount; i++) {
     const r = rng(`${seed}:tx:${profile.id}:${i}`);
-    const dayIndex = Math.floor(r() * 90);
+    const dayIndex = Math.floor(r() * days);
     const day = new Date(EPOCH - dayIndex * DAY_MS);
     day.setUTCHours(0, 0, 0, 0);
     const hour =

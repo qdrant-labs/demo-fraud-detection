@@ -1,0 +1,591 @@
+<title>Unsupervised Fraud Triage on Qdrant</title>
+
+<style>
+  :root {
+    --paper: #f6f7f9;
+    --card: #ffffff;
+    --ink: #14181f;
+    --ink-soft: #4d5765;
+    --ink-faint: #7b8695;
+    --rule: #d8dde4;
+    --rule-soft: #e7eaef;
+    --accent: #b01838;
+    --accent-wash: #fbeef1;
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0f1319;
+      --card: #151a22;
+      --ink: #e6eaf0;
+      --ink-soft: #a3adbb;
+      --ink-faint: #7b8695;
+      --rule: #262d38;
+      --rule-soft: #1d232c;
+      --accent: #f2607f;
+      --accent-wash: #2a1720;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #0f1319;
+    --card: #151a22;
+    --ink: #e6eaf0;
+    --ink-soft: #a3adbb;
+    --ink-faint: #7b8695;
+    --rule: #262d38;
+    --rule-soft: #1d232c;
+    --accent: #f2607f;
+    --accent-wash: #2a1720;
+  }
+
+  :root[data-theme="light"] {
+    --paper: #f6f7f9;
+    --card: #ffffff;
+    --ink: #14181f;
+    --ink-soft: #4d5765;
+    --ink-faint: #7b8695;
+    --rule: #d8dde4;
+    --rule-soft: #e7eaef;
+    --accent: #b01838;
+    --accent-wash: #fbeef1;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: ui-serif, Charter, Georgia, "Times New Roman", serif;
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 3rem 1.5rem 5rem;
+  }
+
+  .sheet {
+    max-width: var(--measure);
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2.25rem;
+  }
+
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  h1 {
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: clamp(1.9rem, 5vw, 2.6rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.08;
+    text-wrap: balance;
+    margin: 0.5rem 0 0;
+  }
+
+  .standfirst {
+    font-size: 1.12rem;
+    color: var(--ink-soft);
+    margin: 0.85rem 0 0;
+    text-wrap: pretty;
+  }
+
+  h2 {
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 1.16rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0 0 0.75rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--rule);
+  }
+
+  h3 {
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.94rem;
+    font-weight: 650;
+    margin: 1.4rem 0 0.4rem;
+  }
+
+  p { margin: 0 0 0.85rem; text-wrap: pretty; }
+  section > *:last-child { margin-bottom: 0; }
+
+  ul { margin: 0 0 0.85rem; padding-left: 1.15rem; }
+  li { margin-bottom: 0.4rem; }
+
+  code, .num {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.87em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  code { color: var(--ink-soft); }
+
+  .formula {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.95rem;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    padding: 0.85rem 1rem;
+    margin: 0 0 0.95rem;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+
+  .scroller { overflow-x: auto; margin: 0 0 0.95rem; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 30rem;
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  caption {
+    caption-side: bottom;
+    text-align: left;
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.78rem;
+    color: var(--ink-faint);
+    padding-top: 0.6rem;
+    line-height: 1.45;
+  }
+
+  th, td {
+    text-align: right;
+    padding: 0.42rem 0.7rem;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+
+  th:first-child, td:first-child { text-align: left; padding-left: 0; }
+  th:last-child, td:last-child { padding-right: 0; }
+
+  thead th {
+    font-weight: 600;
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--rule);
+  }
+
+  tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
+  tr.highlight td { background: var(--accent-wash); font-weight: 600; }
+  td.weak { color: var(--accent); }
+
+  .callout {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    padding: 1rem 1.15rem;
+    margin: 0 0 0.95rem;
+  }
+
+  .callout p:last-child { margin-bottom: 0; }
+
+  blockquote {
+    margin: 0 0 0.95rem;
+    padding-left: 1rem;
+    border-left: 2px solid var(--rule);
+    color: var(--ink-soft);
+  }
+
+  blockquote p:last-child { margin-bottom: 0; }
+
+  .foot {
+    border-top: 1px solid var(--rule);
+    padding-top: 1rem;
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.76rem;
+    line-height: 1.55;
+    color: var(--ink-faint);
+  }
+
+  .foot p { margin-bottom: 0.5rem; }
+
+  a { color: var(--accent); }
+
+  @media print {
+    body { background: #fff; color: #000; padding: 0; font-size: 10.2pt; }
+    .sheet { max-width: none; gap: 1.25rem; }
+    h2 { break-after: avoid; }
+    table, .callout, .formula { break-inside: avoid; }
+    tr.highlight td { background: #f2f2f2; }
+  }
+</style>
+
+<article class="sheet">
+
+  <header>
+    <p class="eyebrow">Card Fraud &middot; Technical Brief</p>
+    <h1>Catching Fraud That Has No Label Yet</h1>
+    <p class="standfirst">
+      A per-cardholder behavioral baseline in Qdrant, scored on every authorization. It needs no
+      chargeback labels, it returns a decision in under 14 ms at 11 million transactions, and it
+      produces roughly 10,800 false alerts per million authorizations. This brief says what that
+      buys and what it doesn't.
+    </p>
+  </header>
+
+  <section>
+    <h2>The Labels Arrive Too Late To Help</h2>
+    <p>
+      A supervised fraud model learns from chargebacks, and a chargeback lands weeks after the
+      transaction it describes. For patterns the model has already seen, that lag is tolerable.
+      For a pattern that started last Tuesday it's the whole problem: the fraud runs until enough
+      of it has been labeled to retrain on, and only then does the model see it.
+    </p>
+    <p>
+      A per-cardholder behavioral baseline asks a different question, one that needs no labels at
+      all. Not "does this look like known fraud" but "does this look like this cardholder". Every
+      customer supplies their own training data by transacting normally, so the signal is
+      available on day one of a new pattern rather than six weeks in.
+    </p>
+  </section>
+
+  <section>
+    <h2>The Score Is A Ratio, So One Threshold Fits Every Customer</h2>
+    <p>
+      Each transaction becomes one 31-dimensional vector: amount, currency, hour of day, day of
+      week, merchant category, channel, distance from the cardholder's home city, whether the
+      merchant is new for this cardholder, and five values describing the recent history (minutes
+      since the last charge, same-merchant count in the last 10 minutes, implied travel speed,
+      amount against the recent median, and the length of any run of escalating charges at one
+      merchant).
+    </p>
+    <p>Scoring compares the new vector against the cardholder's own past, and nobody else's:</p>
+    <div class="formula">score = d_event / d_local
+
+d_event  mean distance from the event to its 10 nearest neighbors
+         inside this cardholder's history
+d_local  mean distance of those 10 neighbors from their own centroid</div>
+    <p>
+      Dividing by the local spread is what makes one threshold work for everyone. A cardholder who
+      always spends 40 EUR at three merchants has a tight neighborhood, so a 120 EUR charge in a
+      new city is far in relative terms. A cardholder whose normal life already spans 200 EUR to
+      4,000 EUR has a loose neighborhood, and the same absolute distance sits comfortably inside
+      it. Both produce comparable ratios, so a deployment maintains one number rather than
+      80 million.
+    </p>
+  </section>
+
+  <section>
+    <h2>Two Reads On The Decision Path</h2>
+    <p>
+      Every cardholder's history lives in one Qdrant collection, partitioned by payload rather
+      than split across collections. <code>tenant_id</code> carries a keyword index with
+      <code>is_tenant: true</code>, which tells Qdrant to co-locate a cardholder's vectors so
+      reading them is sequential. HNSW is configured the way the multitenancy documentation
+      prescribes for this shape, <code>m: 0</code> with <code>payload_m: 16</code>: no global
+      graph over the whole collection, one subgraph per cardholder group instead.
+    </p>
+    <p>Scoring an authorization is two reads and one write:</p>
+    <ul>
+      <li><strong>Recent History.</strong> A filtered scroll for the cardholder's 30 most recent
+        points, newest first, which supplies the five recent-history features.</li>
+      <li><strong>Nearest Neighbors.</strong> A tenant-filtered vector search, prefetching 100
+        candidates and reranking them with an exponential recency decay so recent behavior counts
+        for more, returning the top 10 with their vectors.</li>
+      <li><strong>The Write Happens After The Decision.</strong> The scored event is persisted so
+        the next authorization can see it, but nothing in the approve-or-decline path waits on it.
+        Every latency number in this brief excludes it.</li>
+    </ul>
+    <p>
+      Qdrant applies the tenant filter during graph traversal rather than as a post-filter, so the
+      search reads one cardholder's few hundred vectors instead of scanning the collection and
+      discarding almost all of it. That is what keeps the cost of a query tied to one customer's
+      history rather than to the size of the collection around it, and the sweep later in this
+      brief is what it looks like measured.
+    </p>
+    <p>
+      In a bank the recent-history read comes from the feature store or cache that already exists,
+      which leaves a single filtered vector search on the decision path.
+    </p>
+
+    <h3>The Evidence Is Written Onto The Point</h3>
+    <p>
+      Each alert stores the 10 neighbor IDs it actually used, <code>d_event</code>,
+      <code>d_local</code>, and a plain-language explanation. An analyst opening the case in March
+      reproduces the exact arithmetic from February, on the neighbor set as it stood at scoring
+      time, rather than on whatever a fresh search would return now. For model governance that
+      reproducibility carries as much weight as the latency does.
+    </p>
+
+    <h3>On Isolation, Precisely</h3>
+    <blockquote>
+      <p>
+        Every query carries a tenant filter, and <code>tenant_id</code> is indexed with
+        <code>is_tenant: true</code> so each cardholder's vectors are co-located.
+        <code>evals/tenant-isolation.ts</code> asserts that no neighbor returned on any of the
+        system's query paths belongs to another cardholder.
+      </p>
+    </blockquote>
+    <p>
+      That's an application-layer guarantee enforced by the query path, and it should be read as
+      one. Where a hard boundary is the requirement, Qdrant's own exception is separate collections
+      with per-tenant encryption, under a limit of roughly 1,000 collections.
+    </p>
+  </section>
+
+  <section>
+    <h2>What It Detects</h2>
+    <p>
+      Measured on 4,961 synthetic events containing 60 labeled fraud sequences, 20 of each pattern,
+      scored through the production path at the shipped threshold of 2.0. The held-out column
+      derives its customers, its background traffic, and its fraud placement from a different world
+      seed, so nothing in it was seen during tuning.
+    </p>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Sequences Detected</th><th>Tuning Seed</th><th>Held-Out Seed</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Card testing</td><td>20 / 20</td><td>20 / 20</td></tr>
+          <tr><td>Impossible travel</td><td>20 / 20</td><td>20 / 20</td></tr>
+          <tr><td>Escalating amounts</td><td class="weak">10 / 20</td><td class="weak">17 / 20</td></tr>
+          <tr class="highlight"><td>All sequences</td><td>50 / 60 &nbsp;(0.833)</td><td>57 / 60 &nbsp;(0.950)</td></tr>
+          <tr><td>Alerted events that were fraud</td><td>156 / 207 &nbsp;(0.754)</td><td>169 / 203 &nbsp;(0.833)</td></tr>
+        </tbody>
+      </table>
+      <caption>
+        A sequence counts as detected when at least one of its events alerts. Re-measured
+        2026-07-27; <code>evals/TUNING.md</code> carries the full record.
+      </caption>
+    </div>
+    <p>
+      Escalating amounts is the weak pattern, and it stays published as measured. The escalation is
+      a chain, and the chain competes with the cardholder's own background traffic at the same
+      merchant for the 30 recent-history slots, so by the time the last step scores, the visible
+      run is shorter than the attack actually was. Retuning for it is a separate investigation, and
+      an explained 0.50 is more useful to a reviewer than an unexplained one.
+    </p>
+  </section>
+
+  <section>
+    <h2>What It Costs At Real Prevalence</h2>
+    <p>
+      That precision is measured on a stream where 5.2% of events are fraud. Real card fraud runs
+      near 0.1% of authorizations. Recall and the false-positive rate hold across that change;
+      precision does not, because its denominator is dominated by normal traffic that grows a
+      hundredfold. Projecting the measured rates onto a million authorizations:
+    </p>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Per Million Authorizations At 0.1%</th><th>Tuning Seed</th><th>Held-Out Seed</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>False-positive rate per normal event</td><td>1.085%</td><td>0.723%</td></tr>
+          <tr><td>False alerts</td><td>10,838</td><td>7,227</td></tr>
+          <tr><td>True alerts</td><td>600</td><td>650</td></tr>
+          <tr><td>Precision, per event</td><td class="weak">0.052</td><td class="weak">0.083</td></tr>
+          <tr class="highlight"><td>Fraud cases caught, of 231</td><td>192</td><td>219</td></tr>
+        </tbody>
+      </table>
+      <caption>
+        Two views of the same data, each with its denominator stated. The event view counts one
+        alert per fraudulent authorization; the case view counts one case per fraud sequence, which
+        averages 4.33 events, so 0.1% event prevalence is 231 cases per million.
+      </caption>
+    </div>
+    <div class="callout">
+      <p>
+        <strong>Read the false-positive rate as conditional.</strong> It was measured on synthetic
+        background traffic, not on bank authorizations, so projecting it onto 999,000 real
+        transactions is an estimate that inherits whatever that traffic gets wrong about real
+        cardholders. Calibrating it against a sample of live authorizations is the first thing a
+        deployment should do.
+      </p>
+    </div>
+    <p>
+      Roughly 95% of alerts being false is what an unsupervised outlier signal looks like at
+      production prevalence, and it's why this belongs in front of an analyst queue rather than in
+      front of an approve-or-decline. Read as triage it's a reasonable trade: about 11,000 items a
+      million to review, against 192 fraud cases that carried no label anyone could have trained
+      on.
+    </p>
+  </section>
+
+  <section>
+    <h2>What Costs Is Cardholders, Not Transactions</h2>
+    <p>
+      Decision latency is the recent-history scroll plus the neighbor search, including the local
+      feature encoding between them. The write is excluded. Each cell loads a fresh collection,
+      waits for the optimizer to settle, discards 100 warm-up events, then measures 1,000
+      authorizations one at a time.
+    </p>
+    <p>
+      The cells fall into two groups, and the grouping matters. A cell with fewer cardholders than
+      samples has to touch each cardholder more than once, which measures a warm segment; a cell
+      with 1,000 or more cardholders measures a cold first touch every time, which is the
+      production case, since an issuer's next authorization comes from an arbitrary cardholder.
+      Comparisons are only made inside a group.
+    </p>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>Collection</th><th>Points</th><th>History<br>Per Cardholder</th>
+            <th>Scroll</th><th>Search</th><th>p50</th><th>p95</th><th>p99</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="8"><em>200 cardholders measured, five touches each</em></td></tr>
+          <tr><td>200 cardholders, 90 days</td><td>0.11 M</td><td>547</td><td>4.31</td><td>4.58</td><td>8.95</td><td>10.62</td><td>12.10</td></tr>
+          <tr><td>200 cardholders, 15 months</td><td>1.09 M</td><td>5,472</td><td>3.71</td><td>4.23</td><td>7.96</td><td>10.57</td><td>11.95</td></tr>
+          <tr><td colspan="8"><em>1,000 cardholders measured, one cold touch each</em></td></tr>
+          <tr><td>2,000 cardholders, 90 days</td><td>1.10 M</td><td>550</td><td>4.53</td><td>3.77</td><td>8.27</td><td>9.82</td><td>11.16</td></tr>
+          <tr class="highlight"><td>20,000 cardholders, 90 days</td><td>11.0 M</td><td>548</td><td>7.98</td><td>5.57</td><td>13.51</td><td>17.57</td><td>21.24</td></tr>
+        </tbody>
+      </table>
+      <caption>
+        Milliseconds. Scroll and search columns are medians; p50, p95, and p99 are of the two
+        combined. Each row is the first run of its cell; repeat runs are quoted in the text. Every
+        cell is HNSW graph-indexed: at 31-dimension float32 the 0.11 M cell's segments sit under
+        Qdrant's default per-segment indexing threshold and would run an exact scan, so its
+        threshold was lowered to force the graph and hold the retrieval mechanism constant across
+        cells. 1,000 samples per cell, so p99 is the tenth-worst observation. Apple M5 Pro,
+        15 cores, 24 GB, Qdrant 1.18.2 in Docker, single node, loopback connection, 16 GB
+        allocated to the container. Container memory was watched during the runs and peaked near
+        7 GB on the largest cell, which is an observation rather than a recorded metric; per-run
+        resident size and page-fault counters are not captured, so memory residency is not ruled
+        out as a contributor to the 11 million row.
+      </caption>
+    </div>
+    <p>
+      Both groups grow the collection tenfold, and they disagree about what it costs. Holding
+      cardholders at 200 and giving each one 15 months of history instead of three moves the median
+      from 8.95 ms (repeat: 8.65) to 7.96 ms (repeats: 8.54, 8.40). Holding history at
+      three months and going from 2,000 cardholders to 20,000 moves it from 8.27 ms (repeats: 8.99,
+      9.17) to 13.51 ms (repeat: 13.85).
+    </p>
+    <p>
+      The same tenfold in points costs nothing one way and about 5 ms the other, so the transaction
+      count is not the driver. The number of cardholders is. The split between the two reads says
+      the same thing: the payload-filtered scroll goes from 4.53 to 7.98 ms across that step while
+      the vector search moves only from 3.77 to 5.57 ms. Growth is landing on the filter, not on
+      the graph traversal.
+    </p>
+
+    <h3>The Multitenant HNSW Config Makes No Measurable Difference Here</h3>
+    <p>
+      At 1.1 million points the two configs are too close to separate. Three runs with
+      <code>m: 0, payload_m: 16</code> gave medians of 8.27, 8.99, and 9.17 ms against 9.21, 8.43,
+      and 9.67 ms for Qdrant's default global graph. The multitenant median is lower, at 8.99
+      against 9.21, but the two sets interleave and the gap is smaller than the spread within
+      either one. Read that as no measurable difference at this size, not as a small win.
+    </p>
+    <p>
+      At 11 million the same holds, at two runs per configuration. The multitenant config scored
+      13.51 / 17.57 / 21.24 ms and 13.85 / 19.84 / 26.35; the default global graph scored
+      13.26 / 16.13 / 20.74 and 15.55 / 23.63 / 34.52. The four runs interleave. The one outlier,
+      the default run with the 34.52 ms p99, was measured on a Docker storage volume that repeated
+      11-million-point load and delete cycles had degraded, and which was wiped afterward; its
+      repeat on a fresh volume produced the fastest run of the four. An earlier draft read that
+      outlier as the config separating at this size. The repeats say the spread is storage state,
+      not graph configuration. The multitenant config stays the shipped choice because it is what
+      the multitenancy documentation prescribes for payload-partitioned collections, but no latency
+      number in this brief depends on it.
+    </p>
+  </section>
+
+  <section>
+    <h2>The Threshold Is Calibrated To History Depth</h2>
+    <p>
+      One result from the sweep belongs in any retention decision. The alert threshold of 2.0 was
+      tuned against cardholders holding roughly three months of history. On the 15-month cell,
+      where each cardholder holds 5,472 points instead of 547, 2.5% of ordinary transactions clear
+      that same threshold, reproducibly at exactly 25 of 1,000 across three runs.
+    </p>
+    <p>
+      The mechanism is in the ratio. Denser history puts a cardholder's 10 nearest neighbors closer
+      together, which shrinks <code>d_local</code>, and a smaller denominator lifts the score for an
+      unchanged transaction. A deployment that extends its retention window has to recalibrate the
+      threshold against the new depth, or watch its false-positive rate climb for reasons that have
+      nothing to do with fraud.
+    </p>
+    <p>
+      Those alerts are also why the benchmark flags that cell. An alerted event is persisted even
+      when the benchmark asks for no writes, so the 15-month cell wrote 25 points during its
+      measurement and the harness marks it accordingly. Those 25 points land across 200 cardholders
+      holding 5,472 points each, roughly one extra point per eight cardholders, which is too small
+      to move a latency median. The flag is reported here rather than suppressed, and the reading
+      it produced is used.
+    </p>
+  </section>
+
+  <section>
+    <h2>Where This Sits In A Real Fraud Stack</h2>
+    <p>
+      Per-cardholder behavioral profiling is an established technique in issuer fraud stacks. The
+      question it answers, "does this look like this cardholder", is one banks already ask. What
+      this brief adds is an implementation of that question as a filtered vector search, with the
+      cost of every query tied to one cardholder's history rather than to the size of the
+      collection.
+    </p>
+    <p>
+      The latency fits the envelope it would have to live in. A card authorization runs on an
+      end-to-end budget of a few hundred milliseconds, and the risk-scoring slice of that budget
+      is typically tens of milliseconds. A 13.5 ms median at 11 million points, measured on a
+      laptop over loopback, sits inside that slice with room left for the network hops a
+      production deployment adds.
+    </p>
+  </section>
+
+  <section>
+    <h2>What This Is Not</h2>
+    <ul>
+      <li><strong>A Fraud Engine.</strong> This is one signal for the unlabeled tail, feeding an
+        analyst queue alongside the rules engine and the supervised model, and it replaces
+        neither.</li>
+      <li><strong>A Full Feature Set.</strong> A production issuer runs hundreds of features
+        through gradient-boosted trees, plus rules, plus consortium signals. A nearest-neighbor
+        outlier ratio on 31 hand-weighted features is one input among those.</li>
+      <li><strong>Real Data.</strong> Every number here is measured on a generated world of
+        cardholders and generated fraud sequences. No consortium data, no device fingerprinting,
+        no supervised training.</li>
+      <li><strong>A Closed Loop.</strong> There are no chargeback labels and no analyst
+        dispositions flowing back. Real deployments retune on both.</li>
+      <li><strong>A Throughput Benchmark.</strong> Per-query latency was measured; sustained
+        throughput under concurrent load was not. The benchmark ran on a laptop over loopback
+        rather than on server hardware.</li>
+      <li><strong>A Distributed Test.</strong> Payload-based partitioning is documented to scale
+        to roughly 10,000 tenants, past which the answer is custom sharding by tenant key and
+        promoting large tenants to dedicated shards. That recommendation comes from Qdrant's
+        documentation, not from anything measured here.</li>
+    </ul>
+    <p>
+      At 80 million cardholders the shape of the deployment changes: a rolling retention window
+      rather than unbounded history, tiered multitenancy, and sharding by cardholder key. The sweep
+      establishes which of those levers matters. Retention depth is close to free, so a longer
+      window is affordable as long as the threshold is recalibrated for it. Cardholder count is
+      what the cost tracks, and sharding by cardholder key is the documented answer to that.
+    </p>
+  </section>
+
+  <footer class="foot">
+    <p>
+      Measured 2026-07-27 on Qdrant 1.18.2. Detection numbers come from
+      <code>evals/motif-detection.ts</code> on two world seeds; latency from
+      <code>scripts/bench-scale.ts</code>, one JSON row per cell in
+      <code>evals/results/scale.jsonl</code>, which records the environment, sample size, and
+      alerted-event count behind every figure in this brief.
+    </p>
+    <p>
+      Qdrant is a vector search engine, open source and written in Rust. See the
+      <a href="https://qdrant.tech/documentation/manage-data/multitenancy/">Qdrant multitenancy
+      documentation</a> for the partitioning and sharding guidance referenced in this brief.
+    </p>
+  </footer>
+
+</article>

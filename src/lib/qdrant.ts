@@ -72,6 +72,14 @@ async function ensureCollectionNow(): Promise<void> {
       vectors: {
         [FEATURE_VECTOR]: { size: FEATURE_DIM, distance: "Euclid" },
       },
+      // Multitenant HNSW, as the multitenancy docs prescribe for a shared
+      // collection: m: 0 turns off the global graph and payload_m: 16 builds one
+      // subgraph per tenant_id group instead. This repo runs exactly one vector
+      // search (the kNN in score.ts) and it filters on tenant_id, so a global
+      // graph is maintained for a traversal that never happens. The documented
+      // downside — an unfiltered search has to scan every group — costs nothing
+      // for the same reason.
+      hnsw_config: { m: 0, payload_m: 16 },
     });
   }
 
