@@ -25,7 +25,7 @@ Everything below runs against Qdrant in Docker on localhost. It never touches th
   ```
   QDRANT_URL=http://localhost:6333 QDRANT_COLLECTION=bench_demo_11m npm run dev
   ```
-  The wall generates live traffic only for cardholders 0-199 (`TENANT_COUNT` in `world.ts`) and `makeProfile` is deterministic per index, so those 200 have identical baselines to the cloud collection. The rest is depth behind the `Total Points` counter. The janitor spares every baseline because baselines carry no `score` field.
+  The wall generates live traffic only for cardholders 0-199 (`TENANT_COUNT` in `world.ts`) and `makeProfile` is deterministic per index, so those 200 have identical baselines to the cloud collection. The rest is depth behind the `Stored Charges` counter. The janitor spares every baseline because baselines carry no `score` field.
 
 ### `scripts/bench-scale.ts`
 

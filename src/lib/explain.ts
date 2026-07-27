@@ -158,7 +158,7 @@ export function explainAlert(args: {
     explanation = `First ${cp} charge outside ${profile.homeCity.name} in ${n} transactions`;
     headlineKey = "place";
   } else if (recentHot && recentDim === "burstCount") {
-    explanation = `${f.burstCount} charges at ${tx.merchant} inside ${f.burstMinutes} minutes, each around ${tx.currency} ${tx.amount}`;
+    explanation = `${f.burstCount} charges at ${tx.merchant} inside ${f.burstMinutes} min, each around ${tx.currency} ${tx.amount}`;
     headlineKey = "pace";
   } else if (top === "amount" || (recentHot && (recentDim === "ladder" || recentDim === "amountRatio"))) {
     const rises = f.rises >= 2 ? `, ${f.rises} rises in a row` : "";
@@ -238,9 +238,10 @@ export function explainAlert(args: {
         : null,
     amount: () => {
       if (f.rises >= 2) {
+        // rises counts the steps; the run of charges is one longer.
         return {
           field: "Amount",
-          event: `${f.rises} rising charges in a row at ${tx.merchant}`,
+          event: `${f.rises + 1} rising charges in a row at ${tx.merchant}`,
           usual: `steady near ${money(tx.currency, median)}`,
         };
       }
@@ -261,13 +262,12 @@ export function explainAlert(args: {
             event: `${local.hhmm} in ${profile.homeCity.name}`,
             usual: `active ${String(startLocal).padStart(2, "0")}:00-${String(endLocal).padStart(2, "0")}:00`,
           },
-    channel: () => {
-      if (!tx.card_present && profile.onlineShare < 0.35)
-        return { field: "Channel", event: "online", usual: "in person" };
-      if (tx.card_present && profile.onlineShare > 0.65)
-        return { field: "Channel", event: "in person", usual: "online" };
-      return null;
-    },
+    channel: () =>
+      // onlineShare is generated in [0.2, 0.6], so only the online-when-usually-in-person
+      // direction can occur.
+      !tx.card_present && profile.onlineShare < 0.35
+        ? { field: "Channel", event: "online", usual: "in person" }
+        : null,
     currency: () =>
       tx.currency !== profile.homeCity.currency
         ? { field: "Currency", event: tx.currency, usual: profile.homeCity.currency }

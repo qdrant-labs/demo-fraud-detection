@@ -293,7 +293,7 @@ export default function Wall() {
   const [grabbing, setGrabbing] = useState(false);
 
   // The inline attack launcher drawer. Persona is fetched from /api/persona when
-  // the drawer opens (and re-fetched by "New Persona").
+  // the drawer opens (and re-fetched by "New Customer").
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [persona, setPersona] = useState<{ tenantId: string; persona: PersonaSummary } | null>(null);
 
@@ -1033,7 +1033,7 @@ function AlertPanel({
         {multi ? (
           <div className="mt-3">
             <p className="text-base text-slate-300">
-              {story.events.length} Charges At {lead.merchant}
+              {story.events.length} Charges At {top.merchant}
             </p>
             {burstSummary(story.events) ? (
               // A same-merchant, same-city burst of similar amounts reads as six

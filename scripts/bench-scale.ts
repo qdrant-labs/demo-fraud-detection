@@ -139,7 +139,7 @@ function lastBaseline(idx: number): Transaction {
 //
 // `indexed_vectors_count: 0` is a legitimate settled state, not a stall: Qdrant
 // only builds a vector graph for a segment once the segment passes
-// `indexing_threshold` (20 MB by default), and at 31-d float32 a small cell's
+// `indexing_threshold` (10000 KB on this build, read off the server below), and at 31-d float32 a small cell's
 // segments never get there. Those cells run an exact scan over the tenant's
 // filtered points, which IS what the shipped config does at that size. The row
 // records indexed_vectors_count so a reader can tell which mechanism a cell

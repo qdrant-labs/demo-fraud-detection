@@ -102,7 +102,7 @@ Recall (sequences): 50/60 = 0.833   per-motif: card_testing 1.00 | geo_hop 1.00 
 Precision:          156/207 = 0.754
 ```
 
-The reason is size. A collection this small never builds a vector graph under either config: Qdrant indexes a segment once it passes `indexing_threshold` (20 MB by default), and 33k points of 31-d float32 is about 4 MB. Both configurations therefore run an exact scan over the tenant's filtered points and return the same neighbours. The config is still the one to ship — it is what the multitenancy docs prescribe, and it is what takes effect once a collection is large enough to index — but no result in this file depends on it.
+The reason is size. A collection this small never builds a vector graph under either config: Qdrant indexes a segment once it passes `indexing_threshold` (10000 KB on this build, read off the server; see CLAUDE.md trap #1), and 33k points of 31-d float32 is about 4 MB. Both configurations therefore run an exact scan over the tenant's filtered points and return the same neighbours. The config is still the one to ship — it is what the multitenancy docs prescribe, and it is what takes effect once a collection is large enough to index — but no result in this file depends on it.
 
 ### Held-out seed, `fraud-watch-holdout-v1`
 
