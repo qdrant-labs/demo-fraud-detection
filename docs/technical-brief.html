@@ -229,10 +229,11 @@
     <p class="eyebrow">Card Fraud &middot; Technical Brief</p>
     <h1>Catching Fraud That Has No Label Yet</h1>
     <p class="standfirst">
-      A per-cardholder behavioral baseline in Qdrant, scored on every authorization. It needs no
-      chargeback labels, it returns a decision in under 14 ms at 11 million transactions, and it
-      produces roughly 10,800 false alerts per million authorizations. This brief says what that
-      buys and what it doesn't.
+      This brief evaluates a Qdrant-based fraud-triage signal for banks: compare each authorization
+      with that cardholder's own past behavior, then send unusual events to analyst review. It
+      needs no chargeback labels, returns a decision in under 14 ms at 11 million transactions, and
+      produces roughly 10,800 false alerts per million authorizations. The takeaway: it can surface
+      new fraud patterns early, but it is a triage signal, not an approve-or-decline fraud engine.
     </p>
   </header>
 
@@ -245,7 +246,7 @@
       of it has been labeled to retrain on, and only then does the model see it.
     </p>
     <p>
-      A per-cardholder behavioral baseline asks a different question, one that needs no labels at
+      The alternative tested here is a per-cardholder behavioral baseline, which needs no labels at
       all. Not "does this look like known fraud" but "does this look like this cardholder". Every
       customer supplies their own training data by transacting normally, so the signal is
       available on day one of a new pattern rather than six weeks in.
@@ -255,21 +256,23 @@
   <section>
     <h2>The Score Is A Ratio, So One Threshold Fits Every Customer</h2>
     <p>
-      Each transaction becomes one 31-dimensional vector: amount, currency, hour of day, day of
+      Each transaction becomes one 31-field behavioral profile, stored in Qdrant as a vector:
+      amount, currency, hour of day, day of
       week, merchant category, channel, distance from the cardholder's home city, whether the
       merchant is new for this cardholder, and five values describing the recent history (minutes
       since the last charge, same-merchant count in the last 10 minutes, implied travel speed,
       amount against the recent median, and the length of any run of escalating charges at one
       merchant).
     </p>
-    <p>Scoring compares the new vector against the cardholder's own past, and nobody else's:</p>
+    <p>Scoring compares the new transaction profile with only that cardholder's prior transactions:</p>
     <div class="formula">score = d_event / d_local
 
 d_event  mean distance from the event to its 10 nearest neighbors
          inside this cardholder's history
 d_local  mean distance of those 10 neighbors from their own centroid</div>
     <p>
-      Dividing by the local spread is what makes one threshold work for everyone. A cardholder who
+      The ratio adjusts for how varied each cardholder's normal spending already is, which is why
+      one threshold can work across customers. A cardholder who
       always spends 40 EUR at three merchants has a tight neighborhood, so a 120 EUR charge in a
       new city is far in relative terms. A cardholder whose normal life already spans 200 EUR to
       4,000 EUR has a loose neighborhood, and the same absolute distance sits comfortably inside
@@ -279,30 +282,31 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
   </section>
 
   <section>
-    <h2>Two Reads On The Decision Path</h2>
+    <h2>What Qdrant Does For Each Authorization</h2>
     <p>
-      Every cardholder's history lives in one Qdrant collection, partitioned by payload rather
-      than split across collections. <code>tenant_id</code> carries a keyword index with
-      <code>is_tenant: true</code>, which tells Qdrant to co-locate a cardholder's vectors so
-      reading them is sequential. HNSW is configured the way the multitenancy documentation
-      prescribes for this shape, <code>m: 0</code> with <code>payload_m: 16</code>: no global
-      graph over the whole collection, one subgraph per cardholder group instead.
+      The demo stores every cardholder's history in one Qdrant collection rather than one
+      collection per customer. Each record carries a <code>tenant_id</code> indexed with
+      <code>is_tenant: true</code>, which tells Qdrant to store a cardholder's records together so
+      reading them is sequential. The collection uses Qdrant's documented multitenancy setting for
+      this layout, <code>m: 0</code> with <code>payload_m: 16</code>: Qdrant builds its search
+      structure inside each cardholder's group instead of one global graph over the whole
+      collection.
     </p>
     <p>Scoring an authorization is two reads and one write:</p>
     <ul>
       <li><strong>Recent History.</strong> A filtered scroll for the cardholder's 30 most recent
         points, newest first, which supplies the five recent-history features.</li>
-      <li><strong>Nearest Neighbors.</strong> A tenant-filtered vector search, prefetching 100
-        candidates and reranking them with an exponential recency decay so recent behavior counts
-        for more, returning the top 10 with their vectors.</li>
+      <li><strong>Nearest Neighbors.</strong> A search within that cardholder's history: it takes
+        100 candidates, ranks recent behavior higher, and returns the 10 closest matches with
+        their vectors.</li>
       <li><strong>The Write Happens After The Decision.</strong> The scored event is persisted so
         the next authorization can see it, but nothing in the approve-or-decline path waits on it.
         Every latency number in this brief excludes it.</li>
     </ul>
     <p>
-      Qdrant applies the tenant filter during graph traversal rather than as a post-filter, so the
-      search reads one cardholder's few hundred vectors instead of scanning the collection and
-      discarding almost all of it. That is what keeps the cost of a query tied to one customer's
+      Qdrant narrows the search to the cardholder while it searches, not after it has searched the
+      full collection, so a query reads one cardholder's few hundred records instead of scanning
+      the collection and discarding almost all of it. That is what keeps the cost of a query tied to one customer's
       history rather than to the size of the collection around it, and the sweep later in this
       brief is what it looks like measured.
     </p>
@@ -311,9 +315,9 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
       which leaves a single filtered vector search on the decision path.
     </p>
 
-    <h3>The Evidence Is Written Onto The Point</h3>
+    <h3>Each Alert Keeps Its Evidence</h3>
     <p>
-      Each alert stores the 10 neighbor IDs it actually used, <code>d_event</code>,
+      Each alert stores the 10 prior transactions it used as comparisons, <code>d_event</code>,
       <code>d_local</code>, and a plain-language explanation. An analyst opening the case in March
       reproduces the exact arithmetic from February, on the neighbor set as it stood at scoring
       time, rather than on whatever a fresh search would return now. For model governance that
@@ -330,8 +334,8 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
       </p>
     </blockquote>
     <p>
-      That's an application-layer guarantee enforced by the query path, and it should be read as
-      one. Where a hard boundary is the requirement, Qdrant's own exception is separate collections
+      That is query-level isolation, not a hard storage boundary. Where a hard boundary is the
+      requirement, Qdrant's own exception is separate collections
       with per-tenant encryption, under a limit of roughly 1,000 collections.
     </p>
   </section>
@@ -339,8 +343,9 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
   <section>
     <h2>What It Detects</h2>
     <p>
-      Measured on 4,961 synthetic events containing 60 labeled fraud sequences, 20 of each pattern,
-      scored through the production path at the shipped threshold of 2.0. The held-out column
+      The detection results below were measured on 4,961 synthetic events containing 60 labeled
+      fraud sequences, 20 of each pattern, scored through the production path at the shipped
+      threshold of 2.0. The held-out column
       derives its customers, its background traffic, and its fraud placement from a different world
       seed, so nothing in it was seen during tuning.
     </p>
@@ -363,7 +368,7 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
       </caption>
     </div>
     <p>
-      Escalating amounts is the weak pattern, and it stays published as measured. The escalation is
+      Escalating amounts is the weakest pattern, and the table reports it as measured. The escalation is
       a chain, and the chain competes with the cardholder's own background traffic at the same
       merchant for the 30 recent-history slots, so by the time the last step scores, the visible
       run is shorter than the attack actually was. Retuning for it is a separate investigation, and
@@ -408,8 +413,8 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
       </p>
     </div>
     <p>
-      Roughly 95% of alerts being false is what an unsupervised outlier signal looks like at
-      production prevalence, and it's why this belongs in front of an analyst queue rather than in
+      At production prevalence an unlabeled outlier signal sends mostly false alerts, roughly 95%
+      here, which is why this belongs in front of an analyst queue rather than in
       front of an approve-or-decline. Read as triage it's a reasonable trade: about 11,000 items a
       million to review, against 192 fraud cases that carried no label anyone could have trained
       on.
@@ -417,7 +422,7 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
   </section>
 
   <section>
-    <h2>What Costs Is Cardholders, Not Transactions</h2>
+    <h2>Latency Tracks Cardholders, Not Transactions</h2>
     <p>
       Decision latency is the recent-history scroll plus the neighbor search, including the local
       feature encoding between them. The write is excluded. Each cell loads a fresh collection,
@@ -425,7 +430,7 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
       authorizations one at a time.
     </p>
     <p>
-      The cells fall into two groups, and the grouping matters. A cell with fewer cardholders than
+      The benchmark has two groups, and they should not be compared against each other. A cell with fewer cardholders than
       samples has to touch each cardholder more than once, which measures a warm segment; a cell
       with 1,000 or more cardholders measures a cold first touch every time, which is the
       production case, since an issuer's next authorization comes from an arbitrary cardholder.
@@ -451,13 +456,13 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
       <caption>
         Milliseconds. Scroll and search columns are medians; p50, p95, and p99 are of the two
         combined. Each row is the first run of its cell; repeat runs are quoted in the text. Every
-        cell is HNSW graph-indexed: at 31-dimension float32 the 0.11 M cell's segments sit under
-        Qdrant's default per-segment indexing threshold and would run an exact scan, so its
-        threshold was lowered to force the graph and hold the retrieval mechanism constant across
-        cells. 1,000 samples per cell, so p99 is the tenth-worst observation. Apple M5 Pro,
+        cell is HNSW graph-indexed. The 0.11 M cell's segments would otherwise sit under Qdrant's
+        default indexing threshold and run an exact scan, so its threshold was lowered to hold the
+        retrieval mechanism constant across cells.
+        1,000 samples per cell, so p99 is the tenth-worst observation. Apple M5 Pro,
         15 cores, 24 GB, Qdrant 1.18.2 in Docker, single node, loopback connection, 16 GB
-        allocated to the container. Container memory was watched during the runs and peaked near
-        7 GB on the largest cell, which is an observation rather than a recorded metric; per-run
+        allocated to the container. Container memory was watched during the first 11-million-point
+        runs and peaked near 7 GB, which is an observation rather than a recorded metric; per-run
         resident size and page-fault counters are not captured, so memory residency is not ruled
         out as a contributor to the 11 million row.
       </caption>
@@ -465,7 +470,9 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
     <p>
       Both groups grow the collection tenfold, and they disagree about what it costs. Holding
       cardholders at 200 and giving each one 15 months of history instead of three moves the median
-      from 8.95 ms (repeat: 8.65) to 7.96 ms (repeats: 8.54, 8.40). Holding history at
+      from 8.95 ms (repeat: 8.65) to 7.96 ms (repeats: 8.54, 8.40). If the forced graph build adds
+      any overhead, it lands on the 0.11 M cell, so this comparison can only err against the smaller
+      collection. Holding history at
       three months and going from 2,000 cardholders to 20,000 moves it from 8.27 ms (repeats: 8.99,
       9.17) to 13.51 ms (repeat: 13.85).
     </p>
@@ -486,12 +493,13 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
       either one. Read that as no measurable difference at this size, not as a small win.
     </p>
     <p>
-      At 11 million the same holds, at two runs per configuration. The multitenant config scored
-      13.51 / 17.57 / 21.24 ms and 13.85 / 19.84 / 26.35; the default global graph scored
-      13.26 / 16.13 / 20.74 and 15.55 / 23.63 / 34.52. The four runs interleave. The one outlier,
-      the default run with the 34.52 ms p99, was measured on a Docker storage volume that repeated
-      11-million-point load and delete cycles had degraded, and which was wiped afterward; its
-      repeat on a fresh volume produced the fastest run of the four. An earlier draft read that
+      At 11 million points, two runs per configuration show the same result. The multitenant config
+      scored 13.51 / 17.57 / 21.24 ms and 13.85 / 19.84 / 26.35; the default global graph scored
+      13.26 / 16.13 / 20.74 and 15.55 / 23.63 / 34.52. The four runs interleave. The 34.52 ms p99
+      default run was the outlier. It ran on a Docker storage volume degraded by repeated
+      11-million-point load and delete cycles; after the volume was wiped, its repeat produced the
+      fastest run of the four. The load-and-index times point the same way: the outlier took
+      26.9 minutes where the other three runs took 18.5 to 20.3. An earlier draft read that
       outlier as the config separating at this size. The repeats say the spread is storage state,
       not graph configuration. The multitenant config stays the shipped choice because it is what
       the multitenancy documentation prescribes for payload-partitioned collections, but no latency
@@ -508,14 +516,14 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
       that same threshold, reproducibly at exactly 25 of 1,000 across three runs.
     </p>
     <p>
-      The mechanism is in the ratio. Denser history puts a cardholder's 10 nearest neighbors closer
+      The reason is the ratio. Denser history puts a cardholder's 10 nearest neighbors closer
       together, which shrinks <code>d_local</code>, and a smaller denominator lifts the score for an
       unchanged transaction. A deployment that extends its retention window has to recalibrate the
       threshold against the new depth, or watch its false-positive rate climb for reasons that have
       nothing to do with fraud.
     </p>
     <p>
-      Those alerts are also why the benchmark flags that cell. An alerted event is persisted even
+      The benchmark flags that cell because of those alerts. An alerted event is persisted even
       when the benchmark asks for no writes, so the 15-month cell wrote 25 points during its
       measurement and the harness marks it accordingly. Those 25 points land across 200 cardholders
       holding 5,472 points each, roughly one extra point per eight cardholders, which is too small
@@ -527,9 +535,9 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
   <section>
     <h2>Where This Sits In A Real Fraud Stack</h2>
     <p>
-      Per-cardholder behavioral profiling is an established technique in issuer fraud stacks. The
-      question it answers, "does this look like this cardholder", is one banks already ask. What
-      this brief adds is an implementation of that question as a filtered vector search, with the
+      Banks already use per-cardholder behavioral profiling in issuer fraud stacks. It answers the
+      question "does this look like this cardholder". This
+      brief shows one way to implement that question with Qdrant, with the
       cost of every query tied to one cardholder's history rather than to the size of the
       collection.
     </p>
@@ -545,8 +553,8 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
   <section>
     <h2>What This Is Not</h2>
     <ul>
-      <li><strong>A Fraud Engine.</strong> This is one signal for the unlabeled tail, feeding an
-        analyst queue alongside the rules engine and the supervised model, and it replaces
+      <li><strong>A Fraud Engine.</strong> This is one signal for fraud patterns without labels.
+        It feeds an analyst queue alongside the rules engine and the supervised model; it replaces
         neither.</li>
       <li><strong>A Full Feature Set.</strong> A production issuer runs hundreds of features
         through gradient-boosted trees, plus rules, plus consortium signals. A nearest-neighbor
@@ -559,8 +567,8 @@ d_local  mean distance of those 10 neighbors from their own centroid</div>
       <li><strong>A Throughput Benchmark.</strong> Per-query latency was measured; sustained
         throughput under concurrent load was not. The benchmark ran on a laptop over loopback
         rather than on server hardware.</li>
-      <li><strong>A Distributed Test.</strong> Payload-based partitioning is documented to scale
-        to roughly 10,000 tenants, past which the answer is custom sharding by tenant key and
+      <li><strong>A Distributed Test.</strong> Qdrant documents payload-based partitioning as
+        scaling to roughly 10,000 tenants, past which the answer is custom sharding by tenant key and
         promoting large tenants to dedicated shards. That recommendation comes from Qdrant's
         documentation, not from anything measured here.</li>
     </ul>
