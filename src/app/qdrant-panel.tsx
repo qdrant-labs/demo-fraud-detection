@@ -222,13 +222,13 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
       <Step
         n={1}
         title="Every Charge Becomes a Vector"
-        body="Amount, time, place, and merchant type combine into one vector. Similar charges land close together."
+        body="Amount, time, place, and merchant type become one searchable profile. Similar charges stay close."
       />
 
       <Step
         n={2}
         title="Qdrant Finds 10 Similar Charges"
-        body="In this customer's history only. Gray is their past, red this charge, amber the 10 similar charges."
+        body="Only this customer's history is searched. Gray is past charges, red is this charge, amber is the closest 10."
       />
 
       <canvas
@@ -236,7 +236,7 @@ export default function QdrantPanel({ subject }: { subject: PanelSubject }) {
         className="w-full rounded-lg border border-slate-700/60 bg-slate-900/50"
       />
       <p className="-mt-2 text-sm text-slate-500">
-        Further right = further from this customer&apos;s usual behavior
+        Farther right means less normal for this customer
       </p>
 
       <div className="grid grid-cols-3 gap-2">

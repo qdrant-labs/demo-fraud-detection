@@ -150,10 +150,10 @@ export function explainAlert(args: {
   // prior to measure against.
   if (impossibleTravel && f.prevCity && f.kmh > 0) {
     const kmh = Math.round(f.kmh).toLocaleString("en-US");
-    explanation = `Charge in ${tx.city} ${f.travelMinutes} min after ${f.prevCity} — ${kmh} km/h apart`;
+    explanation = `Charge in ${tx.city} ${f.travelMinutes} min after ${f.prevCity}, ${kmh} km/h apart`;
     headlineKey = "travel";
   } else if (top === "geo" || impossibleTravel) {
-    const cp = tx.card_present ? "card-present" : "online";
+    const cp = tx.card_present ? "in-person" : "online";
     // The score badge and ratio cell already show the multiple; no second clause.
     explanation = `First ${cp} charge outside ${profile.homeCity.name} in ${n} transactions`;
     headlineKey = "place";
@@ -165,7 +165,7 @@ export function explainAlert(args: {
     explanation = `Amount ${round1(f.amountRatio)}x this customer's typical spend at ${tx.merchant}${rises}`;
     headlineKey = "amount";
   } else {
-    explanation = `Unlike this customer's normal transactions in several ways at once`;
+    explanation = `This charge breaks several normal patterns for this customer`;
     headlineKey = "";
   }
 

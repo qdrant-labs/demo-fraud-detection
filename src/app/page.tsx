@@ -97,7 +97,7 @@ function ScoreMeter({ score, size = "sm" }: { score: number; size?: "sm" | "lg" 
   return (
     <span
       className={`relative inline-block ${dims} overflow-hidden rounded-full bg-slate-700/60 align-middle`}
-      title="How unusual: distance from typical as a multiple of this customer's usual range. Alerts past 2."
+      title="How unusual this charge is for this customer. Alerts start past 2."
     >
       <span
         className="absolute inset-y-0 left-0 rounded-full bg-red-500/90"
@@ -805,7 +805,7 @@ export default function Wall() {
           <div className="min-w-0">
             <h1 className="text-xl font-semibold tracking-tight">Fraud Detection</h1>
             <p className="truncate text-sm text-slate-400">
-              One Qdrant Collection, 200 Customer Baselines, Scored As Events Land
+              Each Charge Scored Against That Customer&apos;s Own History
             </p>
           </div>
           <button
@@ -830,11 +830,11 @@ export default function Wall() {
           </button>
           <Metric label="Charges / Sec" value={eps.toFixed(1)} />
           <Metric
-            label="Decision p50 / p95"
+            label="Typical / Slow Decision"
             value={`${Math.round(p50)} / ${Math.round(p95)} ms`}
           />
           <Metric
-            label="Total Points"
+            label="Stored Charges"
             value={points === null ? "-" : points.toLocaleString("en-US")}
           />
           <div className="flex items-center gap-2">
@@ -994,7 +994,7 @@ function AlertPanel({
               </span>
             </span>
             <p className="text-xs text-slate-400">
-              times this customer&apos;s usual range &middot; alerts past the 2.0 mark
+              times this customer&apos;s usual range &middot; alert starts past 2.0
             </p>
           </div>
           <button
@@ -1129,7 +1129,7 @@ function AlertPanel({
                 </table>
               </div>
               <p className="text-base text-slate-300">
-                Stored ratio {(evidence.stored.score ?? 0).toFixed(3)}; recomputed from those
+                Saved score {(evidence.stored.score ?? 0).toFixed(3)}; checked again from the
                 same similar charges {evidence.recomputed.score.toFixed(3)}.
               </p>
             </>
@@ -1174,7 +1174,7 @@ function LauncherDrawer({
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Launch An Attack</h2>
-          <p className="mt-0.5 text-sm text-slate-400">Pick an attack and watch it flare on the wall.</p>
+          <p className="mt-0.5 text-sm text-slate-400">Pick a fraud pattern and watch the wall react.</p>
         </div>
         <button
           onClick={onClose}
@@ -1194,7 +1194,7 @@ function LauncherDrawer({
             onSeeEvidence={onSeeEvidence}
           />
         ) : (
-          <p className="text-sm text-slate-400">Assigning a persona…</p>
+          <p className="text-sm text-slate-400">Loading a customer…</p>
         )}
       </div>
     </aside>

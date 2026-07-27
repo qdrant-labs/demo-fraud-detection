@@ -139,7 +139,7 @@ export default function AttackPanel({
     <div className="flex flex-col gap-6">
       {/* Persona card */}
       <section className="rounded-xl border border-slate-700/60 bg-slate-800/30 px-4 py-4">
-        <p className="text-xs uppercase tracking-wide text-slate-500">You Are</p>
+        <p className="text-xs uppercase tracking-wide text-slate-500">Test Customer</p>
         <p className="mt-0.5 text-lg font-semibold">Customer #{tenantId}</p>
         <ul className="mt-2 space-y-1 text-sm text-slate-300">
           <li>Lives in {persona.homeCity}.</li>
@@ -153,7 +153,7 @@ export default function AttackPanel({
           onClick={onNewPersona}
           className="mt-3 text-xs text-slate-500 underline underline-offset-2 hover:text-slate-300"
         >
-          New Persona
+          New Customer
         </button>
       </section>
 
@@ -232,8 +232,8 @@ export default function AttackPanel({
             <div className="mt-3">
               <p className="text-sm text-slate-300">
                 {summary.alerted
-                  ? "Your attack flared on the wall."
-                  : "Checked, no alert. Watch the wall."}
+                  ? "The wall flagged it."
+                  : "Checked. No alert yet."}
               </p>
               {summary.alerted && onSeeEvidence ? (
                 <button
