@@ -16,18 +16,29 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-const scope = new AsyncLocalStorage<{ lastMs: number | null }>();
+const scope = new AsyncLocalStorage<{ lastMs: number | null; bodyMs: number | null }>();
 let installed = false;
 
 // Run one scored event inside its own timing scope.
 export function withFetchTiming<T>(fn: () => Promise<T>): Promise<T> {
   install();
-  return scope.run({ lastMs: null }, fn);
+  return scope.run({ lastMs: null, bodyMs: null }, fn);
 }
 
 // The wall time of the most recent fetch inside the current scope.
 export function lastFetchMs(): number | null {
   return scope.getStore()?.lastMs ?? null;
+}
+
+// Body read + parse time of the most recent restCall, reported by qdrant.ts
+// (the body is consumed outside the fetch wrapper's window).
+export function reportBodyMs(ms: number): void {
+  const store = scope.getStore();
+  if (store) store.bodyMs = ms;
+}
+
+export function lastBodyMs(): number | null {
+  return scope.getStore()?.bodyMs ?? null;
 }
 
 function install(): void {

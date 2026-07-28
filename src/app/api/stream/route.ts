@@ -306,7 +306,12 @@ export async function GET(req: Request): Promise<Response> {
             // five seconds per viewer. The estimate comes off segment metadata
             // and the counter reads the same on a wall.
             const { count } = await qdrant.count(COLLECTION, { exact: false });
-            send("stats", { points: count });
+            // Scheduler probe: a bare 1 ms timer. ~1 ms on a healthy loop; if
+            // it reads ~50 ms, the platform wakes this function's continuations
+            // on a coarse quantum and that, not I/O, is the latency floor.
+            const tTimer = performance.now();
+            await new Promise((r) => setTimeout(r, 1));
+            send("stats", { points: count, timer_ms: performance.now() - tTimer });
           }
           heartbeat();
         } catch (err) {

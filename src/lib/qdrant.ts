@@ -7,6 +7,7 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { Agent } from "undici";
 import type { Contrast } from "./explain";
+import { reportBodyMs } from "./fetch-timing";
 import type { RecentHistory } from "./features";
 import { FEATURE_DIM } from "./features";
 import type { Transaction } from "./world";
@@ -200,7 +201,10 @@ export async function restCall<T>(
   if (!res.ok) {
     throw new Error(`Qdrant ${method} ${path} failed: HTTP ${res.status}`);
   }
-  return ((await res.json()) as { result: T }).result;
+  const tBody = performance.now();
+  const json = (await res.json()) as { result: T };
+  reportBodyMs(performance.now() - tBody);
+  return json.result;
 }
 
 // The wire shape the scorer reads back from scroll/query.

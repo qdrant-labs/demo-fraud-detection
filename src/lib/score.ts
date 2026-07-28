@@ -11,7 +11,7 @@
 
 import { encode, recentHistory, type PriorTx, type RecentHistory } from "./features";
 import { explainAlert, type Contrast } from "./explain";
-import { lastFetchMs } from "./fetch-timing";
+import { lastBodyMs, lastFetchMs } from "./fetch-timing";
 import {
   CONTEXT_LIMIT,
   FEATURE_VECTOR,
@@ -147,6 +147,9 @@ export interface StageTimings {
   scroll_fetch?: number;
   knn_fetch?: number;
   upsert_fetch?: number;
+  // Body read + JSON parse per stage, the slice after headers arrive.
+  scroll_body?: number;
+  knn_body?: number;
 }
 
 function euclid(a: number[], b: number[]): number {
@@ -227,6 +230,7 @@ export async function scoreEvent(
   });
   const t1 = performance.now();
   const scrollFetch = lastFetchMs();
+  const scrollBody = lastBodyMs();
   const priors = context.points.map((p) => priorFromPayload(p.payload as Record<string, unknown>));
   // Cold-start rule: the first CONTEXT_LIMIT points per tenant are scored but
   // never alerted. OR'd below with the zero-eligible-neighbor case once the kNN
@@ -293,6 +297,7 @@ export async function scoreEvent(
   });
   const t2 = performance.now();
   const knnFetch = lastFetchMs();
+  const knnBody = lastBodyMs();
 
   const neighborVectors = knn.points.map(vectorOf);
   const neighborIds = knn.points.map((p) => p.id);
@@ -380,6 +385,8 @@ export async function scoreEvent(
     // viewers on one instance don't contaminate each other's numbers.
     if (scrollFetch !== null) timings.scroll_fetch = scrollFetch;
     if (knnFetch !== null) timings.knn_fetch = knnFetch;
+    if (scrollBody !== null) timings.scroll_body = scrollBody;
+    if (knnBody !== null) timings.knn_body = knnBody;
     if (persist) {
       const upsertFetch = lastFetchMs();
       if (upsertFetch !== null) timings.upsert_fetch = upsertFetch;
