@@ -7,13 +7,22 @@
 // "How Qdrant Sees It" panel that teaches the per-customer kNN score. Between
 // stories the map is the attract loop: full world view, live pings.
 //
+// This file is the wiring: the SSE consumer, the story queue's React state, the
+// camera, the pointer handling, the rAF loop, and the layout. The pieces it
+// drives live next door:
+//
+//   lib/wall-story.ts   the wire event shape, the Story type, and the pure
+//                       enqueue/expire queue rules (with a self-check)
+//   lib/wall-draw.ts    every canvas layer: land, the story arc and markers,
+//                       the live pings
+//   lib/mapview.ts      the camera and the lon/lat -> pixel projection
+//   alert-panel.tsx     the pinned story's right-side panel
+//   qdrant-panel.tsx    the "How Qdrant Sees It" teaching animation inside it
+//
 // The SSE stream is deterministic, so a reconnect resumes without gaps: we dedupe
-// by event ID and only surface a "Reconnecting" hint in the ticker. All of that
-// dedupe/ticker/reconnect machinery is unchanged from the hash-dot wall; only the
-// rendering and the story choreography are new.
+// by event ID and only surface a "Reconnecting" hint in the ticker.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CITIES, haversineKm } from "@/lib/geo";
 import {
   fitCamera,
   LAT_MAX,
@@ -23,224 +32,36 @@ import {
   worldCamera,
   type Camera,
 } from "@/lib/mapview";
-import landDots from "@/lib/land-dots.json";
+import { drawPings, drawStory, jitter, renderLand, type Ping } from "@/lib/wall-draw";
+import {
+  enqueue,
+  expire,
+  STORY_FADE_MS,
+  STORY_TTL_MS,
+  topEvent,
+  type Story,
+  type WallEvent,
+} from "@/lib/wall-story";
 import type { PersonaSummary } from "@/lib/world";
-import QdrantPanel, { type PanelSubject } from "./qdrant-panel";
+import AlertPanel, { LG_MIN, PANEL_PX, ScoreMeter } from "./alert-panel";
+import { type PanelSubject } from "./qdrant-panel";
 import AttackPanel from "./attack-panel";
-
-interface WallEvent {
-  id: string | number;
-  tenant_id: string;
-  ts: string;
-  amount: number;
-  currency: string;
-  merchant: string;
-  city: string;
-  lat: number;
-  lon: number;
-  home_city: string;
-  home_lat: number;
-  home_lon: number;
-  score: number;
-  alerted: boolean;
-  explanation: string;
-  // Generator events carry the full per-stage timings; browser-attack pickups
-  // are replayed from payload, not rescored, so theirs is null.
-  timings: { scroll: number; knn: number; upsert: number; total: number } | null;
-  // Alerted events only.
-  vector?: number[];
-  neighbor_ids?: (string | number)[];
-  d_event?: number;
-  d_local?: number;
-  // "This charge vs this customer's normal" rows (shape mirrors explain.ts Contrast).
-  contrasts?: { field: string; event: string; usual: string }[];
-}
-
-// A live map ping, positioned in geographic coordinates and faded by age.
-interface Ping {
-  lon: number;
-  lat: number;
-  born: number; // performance.now()
-  alerted: boolean;
-  id: string | number;
-}
-
-// One coalesced attack. A burst of alerts from the same customer within
-// COALESCE_MS is one story, not six.
-interface Story {
-  id: string; // first event's id
-  tenant_id: string;
-  events: WallEvent[]; // all alerted, newest appended
-  home: { city: string; lat: number; lon: number };
-  lastAt: number; // performance.now() of the last appended event
-  played: boolean;
-}
-
-// The story's worst charge. One function so the queue card, the alert header,
-// and the "How This Alert Was Caught" arithmetic all point at the same event —
-// picking it independently in each place is how the header ratio and the
-// panel's ratio used to drift apart on multi-charge stories.
-function topEvent(story: Story): WallEvent {
-  return story.events.reduce((m, e) => (e.score > m.score ? e : m), story.events[0]);
-}
-
-// The score as a filled meter with a tick at the alert threshold, so it reads
-// as "how far past the line" instead of a bare multiplier. The track spans
-// 0-METER_MAX; hotter scores clamp the fill and the number carries the rest.
-const METER_MAX = 6;
-const METER_THRESHOLD = 2; // display twin of qdrant-panel's THRESHOLD
-function ScoreMeter({ score, size = "sm" }: { score: number; size?: "sm" | "lg" }) {
-  const fill = Math.min(score / METER_MAX, 1) * 100;
-  const tick = (METER_THRESHOLD / METER_MAX) * 100;
-  const dims = size === "lg" ? "h-3 w-36" : "h-2.5 w-24";
-  return (
-    <span
-      className={`relative inline-block ${dims} overflow-hidden rounded-full bg-slate-700/60 align-middle`}
-      title="How unusual this charge is for this customer. Alerts start past 2."
-    >
-      <span
-        className="absolute inset-y-0 left-0 rounded-full bg-red-500/90"
-        style={{ width: `${fill}%` }}
-      />
-      <span
-        className="absolute inset-y-0 w-0.5 bg-slate-200/80"
-        style={{ left: `${tick}%` }}
-      />
-    </span>
-  );
-}
-
-// One-line summary for a same-merchant, same-city burst of similar amounts
-// (the card-testing shape). Null when the rows differ enough to earn a list:
-// different cities (geo-hop) or a widening amount spread (escalating amounts).
-function burstSummary(events: WallEvent[]): string | null {
-  if (events.length < 4) return null;
-  const [first] = events;
-  if (!events.every((e) => e.merchant === first.merchant && e.city === first.city)) return null;
-  const amounts = events.map((e) => e.amount);
-  const min = Math.min(...amounts);
-  const max = Math.max(...amounts);
-  if (min <= 0 || max / min >= 5) return null;
-  const times = events.map((e) => Date.parse(e.ts));
-  const spanS = Math.round((Math.max(...times) - Math.min(...times)) / 1000);
-  const span = spanS >= 120 ? `${Math.round(spanS / 60)} min` : `${Math.max(spanS, 1)} s`;
-  return `${first.currency} ${min.toLocaleString("en-US")}–${max.toLocaleString("en-US")} each, all in ${span}`;
-}
 
 type Conn = "connecting" | "live" | "reconnecting";
 
-const NORMAL_LIFE_MS = 3000;
-const ALERT_LIFE_MS = 9000;
 const SEEN_CAP = 8000;
 const LATENCY_CAP = 300;
 const EPS_WINDOW_MS = 2000;
 
-const COALESCE_MS = 20_000; // same-customer alerts within this window = one story
-const STORY_CAP = 10; // stories kept in the rail, newest first; oldest is dropped
-const STORY_TTL_MS = 60_000; // unpinned queue entries fade out and drop after this
-const STORY_FADE_MS = 5_000; // fade duration at the end of the TTL
 const HOLD_MS = 7000; // auto mode: how long a story holds before easing back to world
 const CAM_MS = 800; // camera transition duration
 const AUTO_KEY = "wall-auto-play"; // localStorage flag for the pacing toggle
-
-// The alert panel's desktop width. The Tailwind class (lg:w-[30rem]) and the
-// story-fit math both read this, so they cannot drift.
-// ponytail: 30rem in px assumes the 16px root font; move the class and this together.
-const PANEL_REM = 30;
-const PANEL_PX = PANEL_REM * 16;
-const LG_MIN = 1024; // Tailwind lg breakpoint; the panel is fixed-right at/above this
-
-const LAND = landDots.points as [number, number][];
-
-// Deterministic sub-degree jitter from the event id, so stacked events at one
-// city fan out instead of overprinting, and a re-emitted duplicate lands in the
-// same spot.
-function jitter(id: string | number): [number, number] {
-  let h = 2166136261 >>> 0;
-  const s = String(id);
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  const a = ((h & 0xffff) / 0xffff - 0.5) * 1.2;
-  const b = (((h >>> 16) & 0xffff) / 0xffff - 0.5) * 1.2;
-  return [a, b];
-}
+const DRAG_SLOP = 5; // a pointer release under this much travel is a click, not a pan
 
 function pct(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
   return sorted[idx];
-}
-
-function ease(t: number): number {
-  const c = Math.max(0, Math.min(1, t));
-  return c < 0.5 ? 2 * c * c : 1 - Math.pow(-2 * c + 2, 2) / 2;
-}
-
-// The event in a story that sits away from the customer's home city, if any
-// (the geo-hop's second leg). Drives the arc.
-function awayEvent(story: Story): WallEvent | null {
-  for (const e of story.events) {
-    if (Math.abs(e.lat - story.home.lat) > 0.5 || Math.abs(e.lon - story.home.lon) > 0.5) {
-      return e;
-    }
-  }
-  return null;
-}
-
-// A glowing quadratic arc from home to the away city, drawn progressively, with
-// the great-circle distance labeled at its apex. `playStart` is when the story
-// pinned (performance.now), which drives the draw progress.
-function drawArc(
-  ctx: CanvasRenderingContext2D,
-  story: Story,
-  away: WallEvent,
-  cam: Camera,
-  w: number,
-  h: number,
-  now: number,
-  playStart: number,
-): void {
-  const [hx, hy] = project(story.home.lon, story.home.lat, cam, w, h);
-  const [ex, ey] = project(away.lon, away.lat, cam, w, h);
-  const cx = (hx + ex) / 2;
-  const cy = (hy + ey) / 2 - Math.min(200, Math.hypot(ex - hx, ey - hy) * 0.4 + 40);
-
-  const p = ease((now - playStart) / 1200);
-  ctx.strokeStyle = "rgba(239, 68, 68, 0.85)";
-  ctx.lineWidth = 2;
-  ctx.shadowColor = "rgba(239, 68, 68, 0.7)";
-  ctx.shadowBlur = 12;
-  ctx.beginPath();
-  ctx.moveTo(hx, hy);
-  const steps = 40;
-  let headX = hx;
-  let headY = hy;
-  for (let i = 1; i <= steps; i++) {
-    const u = (i / steps) * p;
-    const x = (1 - u) * (1 - u) * hx + 2 * (1 - u) * u * cx + u * u * ex;
-    const y = (1 - u) * (1 - u) * hy + 2 * (1 - u) * u * cy + u * u * ey;
-    ctx.lineTo(x, y);
-    headX = x;
-    headY = y;
-  }
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-
-  // A bright head that travels the arc as it draws.
-  ctx.beginPath();
-  ctx.arc(headX, headY, 4, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(254, 202, 202, 1)";
-  ctx.fill();
-
-  // Distance label at the apex.
-  const km = haversineKm(story.home.lat, story.home.lon, away.lat, away.lon);
-  ctx.fillStyle = "rgba(248, 250, 252, 0.9)";
-  ctx.font = "600 15px ui-sans-serif, system-ui, sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText(`${Math.round(km).toLocaleString("en-US")} km`, cx, cy - 8);
-  ctx.textAlign = "start";
 }
 
 export default function Wall() {
@@ -313,45 +134,6 @@ export default function Wall() {
     camStartRef.current = performance.now();
   }
 
-  // Coalesce an alerted event into an existing same-customer story within
-  // COALESCE_MS (whether or not it is displayed), else start a new story at the
-  // front of the rail. Appends keep events[0] stable, which the panel memo needs.
-  function enqueueStory(ev: WallEvent): void {
-    const now = performance.now();
-    setStories((prev) => {
-      const idx = prev.findIndex(
-        (s) => s.tenant_id === ev.tenant_id && now - s.lastAt < COALESCE_MS,
-      );
-      if (idx !== -1) {
-        const s = prev[idx];
-        const updated: Story = { ...s, events: [...s.events, ev], lastAt: now };
-        const next = [...prev];
-        next[idx] = updated;
-        return next;
-      }
-      const story: Story = {
-        id: String(ev.id),
-        tenant_id: ev.tenant_id,
-        events: [ev],
-        home: { city: ev.home_city, lat: ev.home_lat, lon: ev.home_lon },
-        lastAt: now,
-        played: false,
-      };
-      // Newest first; drop the oldest past the cap, but never evict the story the
-      // viewer has pinned. Under a burst of alerts the pinned (older) story would
-      // otherwise slide past the cap and its panel would vanish mid-view.
-      const all = [story, ...prev];
-      if (all.length <= STORY_CAP) return all;
-      const pinnedId = playingIdRef.current;
-      const kept = all.slice(0, STORY_CAP);
-      if (pinnedId && !kept.some((s) => s.id === pinnedId)) {
-        const pinned = all.find((s) => s.id === pinnedId);
-        if (pinned) return [...all.slice(0, STORY_CAP - 1), pinned];
-      }
-      return kept;
-    });
-  }
-
   // --- SSE stream ---------------------------------------------------------
   useEffect(() => {
     const es = new EventSource("/api/stream");
@@ -383,7 +165,10 @@ export default function Wall() {
       if (ev.timings) latencyRef.current.push(ev.timings.scroll + ev.timings.knn);
       if (latencyRef.current.length > LATENCY_CAP) latencyRef.current.shift();
 
-      if (ev.alerted) enqueueStory(ev);
+      if (ev.alerted) {
+        const now = performance.now();
+        setStories((prev) => enqueue(prev, ev, now, playingIdRef.current));
+      }
     });
 
     es.addEventListener("stats", (e) => {
@@ -505,16 +290,9 @@ export default function Wall() {
       setP50(pct(sorted, 50));
       setP95(pct(sorted, 95));
 
-      // Expire old queue entries. The pinned story is exempt so a viewer who is
-      // studying one never has it yanked away; it expires after unpinning.
       const now = performance.now();
       setTick(now);
-      setStories((prev) => {
-        const next = prev.filter(
-          (s) => s.id === playingIdRef.current || now - s.lastAt < STORY_TTL_MS,
-        );
-        return next.length === prev.length ? prev : next;
-      });
+      setStories((prev) => expire(prev, now, playingIdRef.current));
     }, 500);
     return () => clearInterval(t);
   }, []);
@@ -558,30 +336,6 @@ export default function Wall() {
     size();
     window.addEventListener("resize", size);
 
-    function renderLand(cam: Camera, w: number, h: number) {
-      lctx.clearRect(0, 0, w, h);
-      // Halftone landmasses.
-      const d = Math.max(1.6, Math.min(2.8, cam.s * 0.36));
-      lctx.fillStyle = "rgba(71, 85, 105, 0.8)"; // slate-600, readable on a projector
-      for (const [lon, lat] of LAND) {
-        const [px, py] = project(lon, lat, cam, w, h);
-        if (px < -4 || px > w + 4 || py < -4 || py > h + 4) continue;
-        lctx.fillRect(px - d / 2, py - d / 2, d, d);
-      }
-      // City markers + labels.
-      for (const c of CITIES) {
-        const [px, py] = project(c.lon, c.lat, cam, w, h);
-        if (px < 0 || px > w || py < 0 || py > h) continue;
-        lctx.beginPath();
-        lctx.arc(px, py, 2, 0, Math.PI * 2);
-        lctx.fillStyle = "rgba(148, 163, 184, 0.5)"; // slate-400
-        lctx.fill();
-        lctx.fillStyle = "rgba(148, 163, 184, 0.7)";
-        lctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-        lctx.fillText(c.name, px + 5, py + 3);
-      }
-    }
-
     function frame() {
       const w = window.innerWidth;
       const h = window.innerHeight;
@@ -596,70 +350,17 @@ export default function Wall() {
       // Rebuild the land layer only when the camera (or size) actually changed.
       const key = `${cam.lon.toFixed(2)},${cam.lat.toFixed(2)},${cam.s.toFixed(3)},${w}x${h}`;
       if (key !== landKey) {
-        renderLand(cam, w, h);
+        renderLand(lctx, cam, w, h);
         landKey = key;
       }
 
       ctx.clearRect(0, 0, w, h);
       ctx.drawImage(land, 0, 0, w, h);
 
-      // Geo-hop arc + persistent story markers, while a story is playing. Live
-      // pings expire in seconds, so a story pinned from the queue later would
-      // otherwise zoom to an empty city; these markers live as long as the pin.
       const story = playingStoryRef.current;
-      if (story) {
-        const away = awayEvent(story);
-        if (away) drawArc(ctx, story, away, cam, w, h, now, playStartRef.current);
+      if (story) drawStory(ctx, story, cam, w, h, now, playStartRef.current);
+      pingsRef.current = drawPings(ctx, pingsRef.current, cam, w, h, now);
 
-        const [hx, hy] = project(story.home.lon, story.home.lat, cam, w, h);
-        ctx.beginPath();
-        ctx.arc(hx, hy, 7, 0, Math.PI * 2);
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "rgba(148, 163, 184, 0.9)";
-        ctx.stroke();
-
-        const pulse = 1 + 0.15 * Math.sin(now / 300);
-        ctx.fillStyle = "rgba(239, 68, 68, 0.95)";
-        ctx.shadowColor = "rgba(239, 68, 68, 0.9)";
-        for (const e of story.events) {
-          const [px, py] = project(e.lon, e.lat, cam, w, h);
-          ctx.beginPath();
-          ctx.arc(px, py, 6 * pulse, 0, Math.PI * 2);
-          ctx.shadowBlur = 18;
-          ctx.fill();
-        }
-        ctx.shadowBlur = 0;
-      }
-
-      // Live pings on top.
-      const pings = pingsRef.current;
-      const kept: Ping[] = [];
-      for (const p of pings) {
-        const life = p.alerted ? ALERT_LIFE_MS : NORMAL_LIFE_MS;
-        const age = now - p.born;
-        if (age > life) continue;
-        kept.push(p);
-        const [px, py] = project(p.lon, p.lat, cam, w, h);
-        if (px < -20 || px > w + 20 || py < -20 || py > h + 20) continue;
-        const t = age / life;
-        const alpha = 1 - t * t;
-        if (p.alerted) {
-          const r = 5 + 7 * (1 - Math.min(1, t * 3));
-          ctx.beginPath();
-          ctx.arc(px, py, r, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(239, 68, 68, ${alpha})`;
-          ctx.shadowColor = "rgba(239, 68, 68, 0.9)";
-          ctx.shadowBlur = 20;
-          ctx.fill();
-          ctx.shadowBlur = 0;
-        } else {
-          ctx.beginPath();
-          ctx.arc(px, py, 2.4, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(148, 163, 184, ${alpha * 0.7})`;
-          ctx.fill();
-        }
-      }
-      pingsRef.current = kept;
       raf = requestAnimationFrame(frame);
     }
     raf = requestAnimationFrame(frame);
@@ -711,9 +412,6 @@ export default function Wall() {
     }
     if (best) pinStoryForEvent(String(best.id));
   }
-
-  // Pointer-drag pans the camera; a release with under ~5px of travel is a click.
-  const DRAG_SLOP = 5;
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -913,240 +611,6 @@ export default function Wall() {
         })}
       </div>
     </main>
-  );
-}
-
-// The unified alert panel: everything about a pinned story in one right-side
-// column. Top to bottom: score header, the one-liner and charge trail, the
-// "How This Alert Was Caught" teaching section (animated scatter + arithmetic),
-// the scoring timings, and the evidence link. Fixed-right on desktop, bottom
-// sheet on small screens. Keyed by the caller on story.id, so it remounts (and
-// the scatter animation replays) once per story.
-// The GET /api/alert/[id] shape the evidence expander renders.
-interface Evidence {
-  stored: { score: number | null };
-  recomputed: { score: number } | null;
-  neighbors: {
-    id: string | number;
-    merchant: string;
-    amount: number;
-    currency: string;
-    city: string;
-    ts: string;
-    distance: number;
-  }[];
-}
-
-function AlertPanel({
-  story,
-  subject,
-  onClose,
-}: {
-  story: Story;
-  subject: PanelSubject;
-  onClose: () => void;
-}) {
-  const lead = story.events[0];
-  const top = topEvent(story);
-  const multi = story.events.length > 1;
-  const timings = lead.timings;
-
-  // "Show Evidence" expands in place. The JSON is fetched once on first
-  // expand (keyed by story via the remount), then collapse/expand only toggles.
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const [evidence, setEvidence] = useState<Evidence | null>(null);
-  const [evidenceLoading, setEvidenceLoading] = useState(false);
-
-  async function toggleEvidence(): Promise<void> {
-    if (evidenceOpen) {
-      setEvidenceOpen(false);
-      return;
-    }
-    setEvidenceOpen(true);
-    if (evidence || evidenceLoading) return;
-    setEvidenceLoading(true);
-    try {
-      const r = await fetch(`/api/alert/${top.id}`);
-      if (r.ok) setEvidence((await r.json()) as Evidence);
-    } finally {
-      setEvidenceLoading(false);
-    }
-  }
-
-  return (
-    <aside
-      className="pointer-events-auto fixed z-20 flex flex-col gap-5 overflow-y-auto border-slate-700/60 bg-[#0a0d12]/95 backdrop-blur
-        inset-x-0 bottom-0 max-h-[58vh] border-t p-4
-        lg:inset-y-0 lg:right-0 lg:left-auto lg:h-full lg:max-h-none lg:w-[30rem] lg:border-l lg:border-t-0 lg:p-6"
-    >
-      {/* a. Score header */}
-      <div className="flex items-center justify-between">
-        <span className="rounded-full bg-red-500/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-red-400">
-          Alert
-        </span>
-        <div className="flex items-center gap-3">
-          <div className="text-right">
-            <span className="flex items-center gap-2">
-              <ScoreMeter score={top.score} size="lg" />
-              <span className="font-mono text-3xl font-semibold text-red-400">
-                {top.score.toFixed(1)}
-              </span>
-            </span>
-            <p className="text-xs text-slate-400">
-              times this customer&apos;s usual range &middot; alert starts past 2.0
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            aria-label="Close And Return To World View"
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-600/60 text-slate-400 transition-colors hover:bg-slate-700/50 hover:text-slate-100"
-          >
-            &times;
-          </button>
-        </div>
-      </div>
-
-      {/* b. One-liner, who and where, charge trail */}
-      <div>
-        {/* The top-scored event tells the fullest story: in a burst the last
-            charge has seen the whole run form, the first has seen none of it. */}
-        <p className="text-2xl font-semibold leading-snug text-slate-50">{top.explanation}</p>
-        <p className="mt-2 text-base text-slate-300">
-          Customer {story.tenant_id}, home {story.home.city}
-        </p>
-
-        {/* This charge vs this customer's normal: what the alert broke, and the
-            behavior it broke. Same legibility floor as the teaching steps. */}
-        {top.contrasts?.length ? (
-          <ul className="mt-3 space-y-1 border-l-2 border-slate-600/60 pl-3">
-            {top.contrasts.map((c) => (
-              <li key={c.field} className="text-base leading-snug">
-                <span className="text-slate-500">{c.field}: </span>
-                <span className="font-medium text-red-300">{c.event}</span>
-                <span className="text-slate-400"> — usually {c.usual}</span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-
-        {multi ? (
-          <div className="mt-3">
-            <p className="text-base text-slate-300">
-              {story.events.length} Charges At {top.merchant}
-            </p>
-            {burstSummary(story.events) ? (
-              // A same-merchant, same-city burst of similar amounts reads as six
-              // near-identical rows; one line says more. Trails whose rows differ
-              // (cities, escalating amounts) keep the per-charge list.
-              <p className="mt-1 font-mono text-base text-slate-300">{burstSummary(story.events)}</p>
-            ) : (
-              <ul className="mt-1 space-y-0.5 font-mono text-base text-slate-300">
-                {story.events.slice(0, 6).map((e) => (
-                  <li key={String(e.id)} className="flex justify-between gap-4">
-                    <span>
-                      {e.currency} {e.amount.toLocaleString("en-US")}, {e.city}
-                    </span>
-                    <span
-                      className={e.alerted ? "text-red-400" : "text-slate-400"}
-                      title="Distance from typical, as a multiple of this customer's usual range"
-                    >
-                      {e.score.toFixed(1)}×
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        ) : (
-          <p className="mt-3 font-mono text-base text-slate-200">
-            {lead.currency} {lead.amount.toLocaleString("en-US")} at {lead.merchant}, {lead.city}
-          </p>
-        )}
-      </div>
-
-      {/* c. How This Alert Was Caught (steps + animated scatter + arithmetic) */}
-      <QdrantPanel subject={subject} />
-
-      {/* d. Scoring timings (generator events only; pickups carry no timings) */}
-      {timings ? (
-        <section className="flex flex-col gap-2">
-          <h3 className="text-lg font-semibold text-slate-100">
-            Decided In {Math.round(timings.scroll + timings.knn)} ms
-          </h3>
-          <TimingRow label="Customer History" ms={timings.scroll} />
-          <TimingRow label="Similar Charges Found" ms={timings.knn} />
-          <TimingRow label="Saving the Charge" ms={timings.upsert} />
-          <p className="mt-1 text-base leading-snug text-slate-300">
-            The first two rows are the decision. Saving happens after it, and the
-            next charge can already see the saved one.
-          </p>
-        </section>
-      ) : null}
-
-      {/* e. Full evidence, expanded in place: the pinned neighbor table and the
-          line proving the stored score reproduces from that neighbor set. */}
-      <section className="flex flex-col gap-3">
-        <button
-          onClick={toggleEvidence}
-          aria-expanded={evidenceOpen}
-          className="inline-block self-start rounded-lg bg-red-500/15 px-4 py-2 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25"
-        >
-          Show Evidence
-        </button>
-
-        {evidenceOpen ? (
-          evidenceLoading && !evidence ? (
-            <p className="text-sm text-slate-300">Loading evidence…</p>
-          ) : evidence && evidence.recomputed ? (
-            <>
-              <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-700/60">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-800/50 text-xs uppercase tracking-wide text-slate-400">
-                    <tr>
-                      <th className="px-3 py-2">Merchant</th>
-                      <th className="px-3 py-2">Amount</th>
-                      <th className="px-3 py-2">City</th>
-                      <th className="px-3 py-2">Time</th>
-                      <th className="px-3 py-2 text-right">Distance</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {evidence.neighbors.map((n) => (
-                      <tr key={String(n.id)} className="border-t border-slate-800 text-slate-300">
-                        <td className="px-3 py-2">{n.merchant}</td>
-                        <td className="px-3 py-2 font-mono tabular-nums">
-                          {n.currency} {n.amount.toLocaleString("en-US")}
-                        </td>
-                        <td className="px-3 py-2">{n.city}</td>
-                        <td className="px-3 py-2 text-slate-400">{n.ts}</td>
-                        <td className="px-3 py-2 text-right font-mono tabular-nums">
-                          {n.distance.toFixed(3)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <p className="text-base text-slate-300">
-                Saved score {(evidence.stored.score ?? 0).toFixed(3)}; checked again from the
-                same similar charges {evidence.recomputed.score.toFixed(3)}.
-              </p>
-            </>
-          ) : (
-            <p className="text-sm text-slate-300">Could not load the evidence.</p>
-          )
-        ) : null}
-      </section>
-    </aside>
-  );
-}
-
-function TimingRow({ label, ms }: { label: string; ms: number }) {
-  return (
-    <div className="flex items-baseline justify-between border-b border-slate-800/70 pb-1 text-base">
-      <span className="text-slate-300">{label}</span>
-      <span className="font-mono tabular-nums text-slate-100">{Math.round(ms)} ms</span>
-    </div>
   );
 }
 
