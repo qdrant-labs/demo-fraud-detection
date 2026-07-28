@@ -11,13 +11,12 @@
 
 import { encode, recentHistory, type PriorTx, type RecentHistory } from "./features";
 import { explainAlert, type Contrast } from "./explain";
-import { lastBodyMs, lastFetchMs } from "./fetch-timing";
 import {
+  COLLECTION,
   CONTEXT_LIMIT,
   FEATURE_VECTOR,
   pointFor,
-  restCall,
-  type RestPoint,
+  qdrant,
 } from "./qdrant";
 import { makeProfile, WORLD_SEED, type Transaction } from "./world";
 
@@ -135,21 +134,12 @@ export interface ScoredEvent {
 }
 
 // Optional per-stage wall-clock timing (ms), filled in when a caller passes an
-// object. Used by the latency eval and the wall's p95 ticker. The *_fetch
-// fields are each stage's inner fetch round trip (headers received), present
-// only when the stream route has installed fetch-timing.ts; the gap between a
-// stage and its fetch is the client's body read + parse + validation.
+// object. Used by the latency eval and the wall's p95 ticker.
 export interface StageTimings {
   scroll: number;
   knn: number;
   upsert: number;
   total: number;
-  scroll_fetch?: number;
-  knn_fetch?: number;
-  upsert_fetch?: number;
-  // Body read + JSON parse per stage, the slice after headers arrive.
-  scroll_body?: number;
-  knn_body?: number;
 }
 
 function euclid(a: number[], b: number[]): number {
@@ -196,7 +186,7 @@ export async function scoreEvent(
 
   // (1) CONTEXT SCROLL: the tenant's most recent CONTEXT_LIMIT points, newest
   // first. Feeds recent-history features and the cold-start check.
-  const context = await restCall<{ points: RestPoint[] }>("POST", "/points/scroll", {
+  const context = await qdrant.scroll(COLLECTION, {
     filter: {
       must: [
         { key: "tenant_id", match: { value: tx.tenant_id } },
@@ -229,8 +219,6 @@ export async function scoreEvent(
     with_vector: false,
   });
   const t1 = performance.now();
-  const scrollFetch = lastFetchMs();
-  const scrollBody = lastBodyMs();
   const priors = context.points.map((p) => priorFromPayload(p.payload as Record<string, unknown>));
   // Cold-start rule: the first CONTEXT_LIMIT points per tenant are scored but
   // never alerted. OR'd below with the zero-eligible-neighbor case once the kNN
@@ -251,7 +239,7 @@ export async function scoreEvent(
   // (older than NEIGHBOR_EXCLUDE_MS), so a burst cannot become its own neighbor
   // cluster; see the constant's comment.
   const neighborCutoff = new Date(Date.parse(tx.ts) - NEIGHBOR_EXCLUDE_MS).toISOString();
-  const knn = await restCall<{ points: RestPoint[] }>("POST", "/points/query", {
+  const knn = await qdrant.query(COLLECTION, {
     prefetch: {
       query: eventVector,
       using: FEATURE_VECTOR,
@@ -296,8 +284,6 @@ export async function scoreEvent(
     limit: NEIGHBOR_K,
   });
   const t2 = performance.now();
-  const knnFetch = lastFetchMs();
-  const knnBody = lastBodyMs();
 
   const neighborVectors = knn.points.map(vectorOf);
   const neighborIds = knn.points.map((p) => p.id);
@@ -359,7 +345,8 @@ export async function scoreEvent(
   const persist = alerted || (opts?.persist ?? true);
   let t3 = t2;
   if (persist) {
-    await restCall("PUT", "/points?wait=true", {
+    await qdrant.upsert(COLLECTION, {
+      wait: true,
       points: [
         pointFor(tx, eventVector, recent, {
           score,
@@ -381,16 +368,6 @@ export async function scoreEvent(
     timings.knn = t2 - t1;
     timings.upsert = t3 - t2;
     timings.total = t3 - t0;
-    // Scoped per event via withFetchTiming (stream route), so concurrent
-    // viewers on one instance don't contaminate each other's numbers.
-    if (scrollFetch !== null) timings.scroll_fetch = scrollFetch;
-    if (knnFetch !== null) timings.knn_fetch = knnFetch;
-    if (scrollBody !== null) timings.scroll_body = scrollBody;
-    if (knnBody !== null) timings.knn_body = knnBody;
-    if (persist) {
-      const upsertFetch = lastFetchMs();
-      if (upsertFetch !== null) timings.upsert_fetch = upsertFetch;
-    }
   }
 
   return {

@@ -10,7 +10,6 @@
 // no drift.
 
 import type { Contrast } from "@/lib/explain";
-import { withFetchTiming } from "@/lib/fetch-timing";
 import { scoreEvent, type StageTimings } from "@/lib/score";
 import { COLLECTION, deleteStaleScored, ensureCollection, qdrant, vectorOf } from "@/lib/qdrant";
 import {
@@ -186,12 +185,7 @@ export async function GET(req: Request): Promise<Response> {
             // as they score); ambient background traffic is shown but not stored,
             // so its "now" timestamp never crowds the baseline out of later
             // events' recent-history. Alerts still persist (see scoreEvent).
-            // withFetchTiming attributes the deployed per-decision cost: each
-            // stage's wall splits at the fetch boundary into *_fetch fields on
-            // the wire (see fetch-timing.ts), scoped so viewers don't mix.
-            const s = await withFetchTiming(() =>
-              scoreEvent(tx, timings, { persist: tx.motif !== "none" }),
-            );
+            const s = await scoreEvent(tx, timings, { persist: tx.motif !== "none" });
             emit({
               id: tx.id,
               tenant_id: tx.tenant_id,
@@ -306,12 +300,7 @@ export async function GET(req: Request): Promise<Response> {
             // five seconds per viewer. The estimate comes off segment metadata
             // and the counter reads the same on a wall.
             const { count } = await qdrant.count(COLLECTION, { exact: false });
-            // Scheduler probe: a bare 1 ms timer. ~1 ms on a healthy loop; if
-            // it reads ~50 ms, the platform wakes this function's continuations
-            // on a coarse quantum and that, not I/O, is the latency floor.
-            const tTimer = performance.now();
-            await new Promise((r) => setTimeout(r, 1));
-            send("stats", { points: count, timer_ms: performance.now() - tTimer });
+            send("stats", { points: count });
           }
           heartbeat();
         } catch (err) {

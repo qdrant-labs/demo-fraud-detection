@@ -5,9 +5,7 @@
 // tenant by a tenant-keyed payload index (multitenancy).
 
 import { QdrantClient } from "@qdrant/js-client-rest";
-import { Agent, fetch as undiciFetch } from "undici";
 import type { Contrast } from "./explain";
-import { reportBodyMs, reportFetchMs } from "./fetch-timing";
 import type { RecentHistory } from "./features";
 import { FEATURE_DIM } from "./features";
 import type { Transaction } from "./world";
@@ -154,70 +152,6 @@ export async function deleteStaleScored(maxAgeMs: number): Promise<void> {
       must_not: [{ is_empty: { key: "score" } }],
     },
   });
-}
-
-// The scorer's per-event calls (context scroll, kNN query, upsert) go straight
-// to Qdrant's REST endpoints instead of through the client. Measured on the
-// deployment 2026-07-28: response HEADERS arrive in ~6.5 ms (network + engine),
-// then the BODY trails in for a further ~43 ms per call — size-independent,
-// identical over HTTP/1.1 and HTTP/2, with a healthy event loop (a 1 ms timer
-// fires in 1.15 ms), and the whole ~100 ms per-decision story. Every transport
-// tried so far routed through globalThis.fetch, which Next.js patches on
-// Vercel (data-cache/tracing layer), so these calls use undici's fetch
-// DIRECTLY to keep the hot path off the patched global.
-//
-// scripts/read-only-fetch.ts guards globalThis.fetch for the read-only cloud
-// benchmark; setRestFetch below is its hook into this direct path, and
-// scripts/read-only-fetch.test.ts proves writes stay blocked.
-const h2Dispatcher = new Agent({ allowH2: true, keepAliveTimeout: 10_000 });
-
-let restFetch = undiciFetch as unknown as typeof globalThis.fetch;
-export function setRestFetch(f: typeof globalThis.fetch): void {
-  restFetch = f;
-}
-
-let restBase: { url: string; headers: Record<string, string> } | undefined;
-
-export async function restCall<T>(
-  method: "POST" | "PUT",
-  path: string, // e.g. "/points/scroll", "/points?wait=true"
-  body: unknown,
-): Promise<T> {
-  if (!restBase) {
-    const url = process.env.QDRANT_URL; // read lazily, like makeClient
-    if (!url) throw new Error("QDRANT_URL is not set");
-    const apiKey = process.env.QDRANT_API_KEY;
-    restBase = {
-      url: url.replace(/\/+$/, ""),
-      headers: {
-        "Content-Type": "application/json",
-        ...(apiKey ? { "api-key": apiKey } : {}),
-      },
-    };
-  }
-  const tFetch = performance.now();
-  const res = await restFetch(`${restBase.url}/collections/${COLLECTION}${path}`, {
-    method,
-    headers: restBase.headers,
-    body: JSON.stringify(body),
-    // Non-standard but supported by undici's fetch.
-    dispatcher: h2Dispatcher,
-  } as RequestInit);
-  reportFetchMs(performance.now() - tFetch);
-  if (!res.ok) {
-    throw new Error(`Qdrant ${method} ${path} failed: HTTP ${res.status}`);
-  }
-  const tBody = performance.now();
-  const json = (await res.json()) as { result: T };
-  reportBodyMs(performance.now() - tBody);
-  return json.result;
-}
-
-// The wire shape the scorer reads back from scroll/query.
-export interface RestPoint {
-  id: string | number;
-  payload?: Record<string, unknown> | null;
-  vector?: unknown;
 }
 
 // A point's vector arrives as { features: [...] } for the named vector (or as a
