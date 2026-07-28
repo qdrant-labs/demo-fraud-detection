@@ -12,7 +12,7 @@ import { scoreEvent } from "@/lib/score";
 import {
   makeProfile,
   motifSequence,
-  TENANT_COUNT,
+  tenantIndex,
   WORLD_SEED,
   type Motif,
 } from "@/lib/world";
@@ -26,13 +26,6 @@ type AttackMotif = (typeof MOTIFS)[number];
 
 function isMotif(v: unknown): v is AttackMotif {
   return typeof v === "string" && (MOTIFS as readonly string[]).includes(v);
-}
-
-// A seeded tenant is t0000..t0199 (TENANT_COUNT). Anything else is rejected.
-function tenantIndex(v: unknown): number | null {
-  if (typeof v !== "string" || !/^t\d{4}$/.test(v)) return null;
-  const i = Number(v.slice(1));
-  return i >= 0 && i < TENANT_COUNT ? i : null;
 }
 
 function badRequest(message: string): Response {
@@ -108,7 +101,6 @@ export async function POST(req: Request): Promise<Response> {
           highScore,
           highId,
           alerted: highAlerted,
-          alertPath: `/alert/${highId}`,
         });
       } catch (err) {
         line({ type: "error", message: (err as Error).message });

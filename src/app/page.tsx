@@ -43,7 +43,6 @@ interface WallEvent {
   home_lon: number;
   score: number;
   alerted: boolean;
-  learning: boolean;
   explanation: string;
   // Generator events carry the full per-stage timings; browser-attack pickups
   // are replayed from payload, not rescored, so theirs is null.

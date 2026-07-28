@@ -154,6 +154,18 @@ export async function deleteStaleScored(maxAgeMs: number): Promise<void> {
   });
 }
 
+// A point's vector arrives as { features: [...] } for the named vector (or as a
+// bare array). Pull the array out regardless of shape; empty if absent. The
+// scorer keeps its own throwing variant (a missing vector there is a bug).
+export function vectorOf(v: unknown): number[] {
+  if (Array.isArray(v)) return v as number[];
+  if (v && typeof v === "object") {
+    const named = (v as Record<string, unknown>)[FEATURE_VECTOR];
+    if (Array.isArray(named)) return named as number[];
+  }
+  return [];
+}
+
 // Compact payload keys for the five recent-history feature values. Written back
 // so the wall and evidence panel can replay the exact arithmetic later.
 export interface RecentHistoryPayload {

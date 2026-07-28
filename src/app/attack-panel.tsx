@@ -58,7 +58,6 @@ interface SummaryLine {
   highScore: number;
   highId: string;
   alerted: boolean;
-  alertPath: string;
 }
 
 type Status = "idle" | "launching" | "done";
@@ -100,7 +99,7 @@ export default function AttackPanel({
         body: JSON.stringify({
           tenant_id: tenantId,
           motif,
-          nonce: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          nonce: crypto.randomUUID(),
         }),
       });
       if (!resp.ok || !resp.body) {
@@ -204,7 +203,7 @@ export default function AttackPanel({
               }
               title="Distance from typical, as a multiple of this customer's usual range"
             >
-              {running.toFixed(2)}× this customer's usual range
+              {running.toFixed(2)}× this customer&rsquo;s usual range
             </span>
           </div>
 

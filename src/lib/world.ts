@@ -140,7 +140,25 @@ function tenantId(index: number): string {
   return `t${String(index).padStart(4, "0")}`;
 }
 
+// A seeded tenant id is t0000..t0199 (TENANT_COUNT). Returns the index, or null
+// for anything else. Every public route that takes a tenant id validates with
+// this before any Qdrant work.
+export function tenantIndex(v: unknown): number | null {
+  if (typeof v !== "string" || !/^t\d{4}$/.test(v)) return null;
+  const i = Number(v.slice(1));
+  return i >= 0 && i < TENANT_COUNT ? i : null;
+}
+
+// Profiles are pure functions of (seed, index) and nothing mutates them, so
+// they are memoized: liveEvents rebuilds all 200 every 2 s bucket per viewer,
+// and the scorer looks one up per event. The bench scripts' 20,000 entries fit
+// comfortably in a serverless instance.
+const profileMemo = new Map<string, TenantProfile>();
+
 export function makeProfile(index: number, seed: string = WORLD_SEED): TenantProfile {
+  const memoKey = `${seed}:${index}`;
+  const memoized = profileMemo.get(memoKey);
+  if (memoized) return memoized;
   const r = rng(`${seed}:profile:${index}`);
   const homeCity = pick(r, CITIES);
 
@@ -158,7 +176,7 @@ export function makeProfile(index: number, seed: string = WORLD_SEED): TenantPro
     }
   }
 
-  return {
+  const profile: TenantProfile = {
     id: tenantId(index),
     homeCity,
     categories,
@@ -174,6 +192,8 @@ export function makeProfile(index: number, seed: string = WORLD_SEED): TenantPro
     onlineShare: 0.2 + r() * 0.4, // 0.2-0.6
     txCount: 300 + Math.floor(r() * 500), // 300-800
   };
+  profileMemo.set(memoKey, Object.freeze(profile));
+  return profile;
 }
 
 // Whole-hour timezone offset from longitude (15 deg per hour), good enough for

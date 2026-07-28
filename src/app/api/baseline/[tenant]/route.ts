@@ -3,25 +3,23 @@
 // This is the third and last round trip the panel makes (retrieve point,
 // retrieve neighbors, scroll baseline); it never re-runs the kNN.
 
-import { COLLECTION, FEATURE_VECTOR, qdrant } from "@/lib/qdrant";
+import { COLLECTION, qdrant, vectorOf } from "@/lib/qdrant";
+import { tenantIndex } from "@/lib/world";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function vectorOf(v: unknown): number[] {
-  if (Array.isArray(v)) return v as number[];
-  if (v && typeof v === "object") {
-    const named = (v as Record<string, unknown>)[FEATURE_VECTOR];
-    if (Array.isArray(named)) return named as number[];
-  }
-  return [];
-}
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ tenant: string }> },
 ): Promise<Response> {
   const { tenant } = await params;
+  // Public route: only the 200 seeded demo personas are servable. Anything else
+  // (including the other 19,800 cardholders backing the Stored Charges counter)
+  // is rejected before any Qdrant work.
+  if (tenantIndex(tenant) === null) {
+    return Response.json({ error: "unknown tenant" }, { status: 404 });
+  }
   const res = await qdrant.scroll(COLLECTION, {
     filter: { must: [{ key: "tenant_id", match: { value: tenant } }] },
     limit: 800,

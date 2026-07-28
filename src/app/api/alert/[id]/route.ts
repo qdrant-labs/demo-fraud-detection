@@ -9,20 +9,11 @@
 // a fresh kNN would drift once more of the tenant's events exist, and this must
 // reproduce the original math.
 
-import { COLLECTION, FEATURE_VECTOR, qdrant } from "@/lib/qdrant";
+import { COLLECTION, qdrant, vectorOf } from "@/lib/qdrant";
 import { scoreFromVectors } from "@/lib/score";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function vectorOf(v: unknown): number[] {
-  if (Array.isArray(v)) return v as number[];
-  if (v && typeof v === "object") {
-    const named = (v as Record<string, unknown>)[FEATURE_VECTOR];
-    if (Array.isArray(named)) return named as number[];
-  }
-  return [];
-}
 
 function notFoundJson(): Response {
   return Response.json({ error: "not found" }, { status: 404 });
@@ -117,7 +108,6 @@ export async function GET(
     meta,
     alerted: Boolean(pl.alerted),
     explanation: String(pl.explanation ?? ""),
-    contrasts: Array.isArray(pl.contrasts) ? pl.contrasts : [],
     stored: { score: storedScore, d_event: storedDEvent, d_local: storedDLocal },
     recomputed,
     neighbor_ids: neighborIds.map(String),
