@@ -13,11 +13,11 @@ import { encode, recentHistory, type PriorTx, type RecentHistory } from "./featu
 import { explainAlert, type Contrast } from "./explain";
 import { lastFetchMs } from "./fetch-timing";
 import {
-  COLLECTION,
   CONTEXT_LIMIT,
   FEATURE_VECTOR,
   pointFor,
-  qdrant,
+  restCall,
+  type RestPoint,
 } from "./qdrant";
 import { makeProfile, WORLD_SEED, type Transaction } from "./world";
 
@@ -193,7 +193,7 @@ export async function scoreEvent(
 
   // (1) CONTEXT SCROLL: the tenant's most recent CONTEXT_LIMIT points, newest
   // first. Feeds recent-history features and the cold-start check.
-  const context = await qdrant.scroll(COLLECTION, {
+  const context = await restCall<{ points: RestPoint[] }>("POST", "/points/scroll", {
     filter: {
       must: [
         { key: "tenant_id", match: { value: tx.tenant_id } },
@@ -246,7 +246,7 @@ export async function scoreEvent(
   // (older than NEIGHBOR_EXCLUDE_MS), so a burst cannot become its own neighbor
   // cluster; see the constant's comment.
   const neighborCutoff = new Date(Date.parse(tx.ts) - NEIGHBOR_EXCLUDE_MS).toISOString();
-  const knn = await qdrant.query(COLLECTION, {
+  const knn = await restCall<{ points: RestPoint[] }>("POST", "/points/query", {
     prefetch: {
       query: eventVector,
       using: FEATURE_VECTOR,
@@ -352,8 +352,7 @@ export async function scoreEvent(
   const persist = alerted || (opts?.persist ?? true);
   let t3 = t2;
   if (persist) {
-    await qdrant.upsert(COLLECTION, {
-      wait: true,
+    await restCall("PUT", "/points?wait=true", {
       points: [
         pointFor(tx, eventVector, recent, {
           score,

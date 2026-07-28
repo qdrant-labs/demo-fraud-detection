@@ -154,6 +154,50 @@ export async function deleteStaleScored(maxAgeMs: number): Promise<void> {
   });
 }
 
+// The scorer's per-event calls (context scroll, kNN query, upsert) go straight
+// to Qdrant's REST endpoints with plain fetch instead of through the client.
+// Measured on the deployment 2026-07-28: the client layer added ~44 ms per call
+// AFTER the response headers arrived (6.5 ms for the entire network+engine
+// round trip), which was the whole ~100 ms per-decision story. Everything off
+// the hot path (collection setup, janitor, pickup scroll, counters) keeps the
+// client, where convenience beats a fixed cost that nobody is timing.
+let restBase: { url: string; headers: Record<string, string> } | undefined;
+
+export async function restCall<T>(
+  method: "POST" | "PUT",
+  path: string, // e.g. "/points/scroll", "/points?wait=true"
+  body: unknown,
+): Promise<T> {
+  if (!restBase) {
+    const url = process.env.QDRANT_URL; // read lazily, like makeClient
+    if (!url) throw new Error("QDRANT_URL is not set");
+    const apiKey = process.env.QDRANT_API_KEY;
+    restBase = {
+      url: url.replace(/\/+$/, ""),
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "api-key": apiKey } : {}),
+      },
+    };
+  }
+  const res = await fetch(`${restBase.url}/collections/${COLLECTION}${path}`, {
+    method,
+    headers: restBase.headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`Qdrant ${method} ${path} failed: HTTP ${res.status}`);
+  }
+  return ((await res.json()) as { result: T }).result;
+}
+
+// The wire shape the scorer reads back from scroll/query.
+export interface RestPoint {
+  id: string | number;
+  payload?: Record<string, unknown> | null;
+  vector?: unknown;
+}
+
 // A point's vector arrives as { features: [...] } for the named vector (or as a
 // bare array). Pull the array out regardless of shape; empty if absent. The
 // scorer keeps its own throwing variant (a missing vector there is a bug).
