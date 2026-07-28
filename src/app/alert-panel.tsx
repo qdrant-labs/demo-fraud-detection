@@ -11,10 +11,12 @@ import { useState } from "react";
 import { topEvent, type Story, type WallEvent } from "@/lib/wall-story";
 import QdrantPanel, { type PanelSubject } from "./qdrant-panel";
 
-// The panel's desktop footprint. The width class below, the wall's story-fit
-// math, and the ticker's right padding all read this, so they cannot drift.
-// ponytail: 30rem in px assumes the 16px root font. Three sites move together —
-// this constant, the lg:w-[30rem] class below, and the ticker's
+// The panel's desktop footprint. Only the wall's story-fit math reads PANEL_PX,
+// to know how much width the panel covers. The two Tailwind literals are NOT
+// derived from it — Tailwind extracts class names statically — so the width is
+// stated three times and stays in sync by hand.
+// ponytail: 30rem in px assumes the 16px root font. Change one, change all
+// three: this constant, the lg:w-[30rem] class below, and the ticker's
 // lg:pr-[calc(30rem+1.5rem)] in page.tsx.
 const PANEL_REM = 30;
 export const PANEL_PX = PANEL_REM * 16;
