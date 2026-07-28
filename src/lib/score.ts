@@ -221,7 +221,8 @@ export async function scoreEvent(
     },
     order_by: { key: "ts", direction: "desc" },
     limit: CONTEXT_LIMIT,
-    with_payload: true,
+    // Only the fields recentHistory reads; the full payload is ~3x the bytes.
+    with_payload: { include: ["ts", "amount", "merchant", "lat", "lon", "city"] },
     with_vector: false,
   });
   const t1 = performance.now();
@@ -286,7 +287,8 @@ export async function scoreEvent(
       },
     },
     with_vector: true,
-    with_payload: true,
+    // Only the fields the neighbor cards show.
+    with_payload: { include: ["ts", "merchant", "amount", "city"] },
     limit: NEIGHBOR_K,
   });
   const t2 = performance.now();

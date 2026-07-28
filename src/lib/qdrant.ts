@@ -5,6 +5,7 @@
 // tenant by a tenant-keyed payload index (multitenancy).
 
 import { QdrantClient } from "@qdrant/js-client-rest";
+import { Agent } from "undici";
 import type { Contrast } from "./explain";
 import type { RecentHistory } from "./features";
 import { FEATURE_DIM } from "./features";
@@ -156,11 +157,20 @@ export async function deleteStaleScored(maxAgeMs: number): Promise<void> {
 
 // The scorer's per-event calls (context scroll, kNN query, upsert) go straight
 // to Qdrant's REST endpoints with plain fetch instead of through the client.
-// Measured on the deployment 2026-07-28: the client layer added ~44 ms per call
-// AFTER the response headers arrived (6.5 ms for the entire network+engine
-// round trip), which was the whole ~100 ms per-decision story. Everything off
+// Measured on the deployment 2026-07-28: response HEADERS arrive in ~6.5 ms
+// (network + engine), then the BODY trails in for a further ~43 ms per call —
+// a size-independent stall specific to HTTP/1.1 against the cloud edge, and
+// the whole ~100 ms per-decision story. The edge negotiates HTTP/2 (verified
+// with curl), so these calls pass an h2-enabled dispatcher; over plain http
+// (local Docker) ALPN never runs and the connection stays h1. Everything off
 // the hot path (collection setup, janitor, pickup scroll, counters) keeps the
-// client, where convenience beats a fixed cost that nobody is timing.
+// client, where convenience beats a per-call cost nobody is timing.
+//
+// Node's global fetch accepts an undici dispatcher in init; going through
+// globalThis.fetch (not undici's own fetch) keeps the read-only-fetch guard
+// and fetch-timing wrapper on this path.
+const h2Dispatcher = new Agent({ allowH2: true, keepAliveTimeout: 10_000 });
+
 let restBase: { url: string; headers: Record<string, string> } | undefined;
 
 export async function restCall<T>(
@@ -184,7 +194,9 @@ export async function restCall<T>(
     method,
     headers: restBase.headers,
     body: JSON.stringify(body),
-  });
+    // Non-standard but supported by Node's undici-backed fetch.
+    dispatcher: h2Dispatcher,
+  } as RequestInit);
   if (!res.ok) {
     throw new Error(`Qdrant ${method} ${path} failed: HTTP ${res.status}`);
   }
