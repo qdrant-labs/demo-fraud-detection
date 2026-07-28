@@ -37,6 +37,11 @@ const POLL_MS = 500;
 const STATS_EVERY_TICKS = 10; // ~5s at POLL_MS = 500ms
 const ATTACK_WINDOW_MS = 15_000; // browser-attack scroll look-back
 const JANITOR_MAX_AGE_MS = 24 * 60 * 60 * 1000; // drop scored events older than this
+const JANITOR_EVERY_MS = 60 * 60 * 1000; // at most one sweep an hour per instance
+// Per instance, not global: instances recycle, so a fresh one sweeps on its first
+// connection. That is the point - the sweep still happens often enough to bound
+// growth, just not once per viewer.
+let lastSweep = 0;
 
 function currentBucket(): number {
   return Math.floor((Date.now() - EPOCH) / BUCKET_MS);
@@ -113,12 +118,17 @@ function homeOf(tenantId: string): {
 export async function GET(req: Request): Promise<Response> {
   await ensureCollection();
 
-  // Bound the collection's growth. Connections recycle every few minutes on
-  // Vercel, so this runs a few times an hour. Fire-and-forget: a slow delete
-  // must not delay the first tick, so it is not awaited on the hot path.
-  deleteStaleScored(JANITOR_MAX_AGE_MS).catch((err) =>
-    console.error("janitor delete failed", err),
-  );
+  // Bound the collection's growth. Fire-and-forget: a slow delete must not delay
+  // the first tick, so it is not awaited on the hot path. Throttled because the
+  // filtered delete costs the cluster about 1.1 s on this collection, and every
+  // viewer opening the wall (and every reconnect, a few times an hour each) was
+  // paying for it while the first buckets scored.
+  if (Date.now() - lastSweep > JANITOR_EVERY_MS) {
+    lastSweep = Date.now();
+    deleteStaleScored(JANITOR_MAX_AGE_MS).catch((err) =>
+      console.error("janitor delete failed", err),
+    );
+  }
 
   const encoder = new TextEncoder();
   const emittedIds = new Set<string | number>(); // this connection's dedupe
@@ -157,10 +167,20 @@ export async function GET(req: Request): Promise<Response> {
         send("tx", ev);
       }
 
-      // Score one bucket's events. Independent tenants run in parallel; a single
-      // tenant's events run strictly in ts order, because a burst's event N must
-      // be upserted before N+1 is scored or the recent-history features never
-      // see the burst forming.
+      // Score one bucket's events, ONE AT A TIME. A single tenant's events run
+      // strictly in ts order, because a burst's event N must be upserted before
+      // N+1 is scored or the recent-history features never see the burst forming.
+      //
+      // Tenants used to run in parallel, and that is what the wall's own latency
+      // counter was reporting: with a bucket's ~10 events in flight together,
+      // every event's stage window also covered the time this single-threaded
+      // runtime spent on its peers. Measured against the 11M cloud collection,
+      // decision latency climbed with an event's position in the bucket - 71.6 ms
+      // for the first, 128.4 ms for the ninth, about 7 ms per event queued ahead -
+      // while Qdrant reported 1.9 ms for the same two round trips. Sequential
+      // costs nothing here: a bucket is 8-12 events per 2 s, so the whole bucket
+      // finishes in well under its own window, and each event's reported latency
+      // is its own.
       async function processBucket(bucket: number): Promise<void> {
         const byTenant = new Map<string, Transaction[]>();
         for (const ev of liveEvents(bucket)) {
@@ -169,51 +189,49 @@ export async function GET(req: Request): Promise<Response> {
           byTenant.set(ev.tenant_id, list);
         }
 
-        await Promise.all(
-          [...byTenant.values()].map(async (txs) => {
-            txs.sort((a, b) => a.ts.localeCompare(b.ts));
-            for (const tx of txs) {
-              const timings: Partial<StageTimings> = {};
-              // Persist only injected fraud sequences (their bursts must build up
-              // as they score); ambient background traffic is shown but not stored,
-              // so its "now" timestamp never crowds the baseline out of later
-              // events' recent-history. Alerts still persist (see scoreEvent).
-              const s = await scoreEvent(tx, timings, { persist: tx.motif !== "none" });
-              emit({
-                id: tx.id,
-                tenant_id: tx.tenant_id,
-                ts: tx.ts,
-                amount: tx.amount,
-                currency: tx.currency,
-                merchant: tx.merchant,
-                merchant_cat: tx.merchant_cat,
-                city: tx.city,
-                lat: tx.lat,
-                lon: tx.lon,
-                ...homeOf(tx.tenant_id),
-                channel: tx.channel,
-                card_present: tx.card_present,
-                score: s.score,
-                alerted: s.alerted,
-                learning: s.learning,
-                explanation: s.explanation,
-                channel_src: tx.channel_src,
-                bucket,
-                timings: timings as StageTimings,
-                // Heavy fields on alerts only, for the vector-space panel.
-                ...(s.alerted
-                  ? {
-                      vector: s.vector,
-                      neighbor_ids: s.neighbors.map((n) => n.id),
-                      d_event: s.d_event,
-                      d_local: s.d_local,
-                      contrasts: s.contrasts,
-                    }
-                  : {}),
-              });
-            }
-          }),
-        );
+        for (const txs of byTenant.values()) {
+          txs.sort((a, b) => a.ts.localeCompare(b.ts));
+          for (const tx of txs) {
+            const timings: Partial<StageTimings> = {};
+            // Persist only injected fraud sequences (their bursts must build up
+            // as they score); ambient background traffic is shown but not stored,
+            // so its "now" timestamp never crowds the baseline out of later
+            // events' recent-history. Alerts still persist (see scoreEvent).
+            const s = await scoreEvent(tx, timings, { persist: tx.motif !== "none" });
+            emit({
+              id: tx.id,
+              tenant_id: tx.tenant_id,
+              ts: tx.ts,
+              amount: tx.amount,
+              currency: tx.currency,
+              merchant: tx.merchant,
+              merchant_cat: tx.merchant_cat,
+              city: tx.city,
+              lat: tx.lat,
+              lon: tx.lon,
+              ...homeOf(tx.tenant_id),
+              channel: tx.channel,
+              card_present: tx.card_present,
+              score: s.score,
+              alerted: s.alerted,
+              learning: s.learning,
+              explanation: s.explanation,
+              channel_src: tx.channel_src,
+              bucket,
+              timings: timings as StageTimings,
+              // Heavy fields on alerts only, for the vector-space panel.
+              ...(s.alerted
+                ? {
+                    vector: s.vector,
+                    neighbor_ids: s.neighbors.map((n) => n.id),
+                    d_event: s.d_event,
+                    d_local: s.d_local,
+                    contrasts: s.contrasts,
+                  }
+                : {}),
+            });
+          }
+        }
       }
 
       // Pick up browser-launched attacks scored on another instance. They land
@@ -291,7 +309,11 @@ export async function GET(req: Request): Promise<Response> {
           await pickupAttacks();
           ticks++;
           if (ticks % STATS_EVERY_TICKS === 0) {
-            const { count } = await qdrant.count(COLLECTION, { exact: true });
+            // Approximate: an exact count scans every point, which the cluster
+            // reports averaging 740 ms on this 11M-point collection, once every
+            // five seconds per viewer. The estimate comes off segment metadata
+            // and the counter reads the same on a wall.
+            const { count } = await qdrant.count(COLLECTION, { exact: false });
             send("stats", { points: count });
           }
           heartbeat();
