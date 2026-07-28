@@ -68,10 +68,19 @@ QDRANT_URL=<cloud> QDRANT_API_KEY=<key> QDRANT_COLLECTION=fraud_demo \
 - It reports two numbers per stage. `srv` is Qdrant's own `time` field, so it has no network in it and is the number to publish. `wall` is what the measuring machine saw, including its round trip to us-west-2 — from a laptop that is ~80 ms per trip and dominates everything, so never quote it.
 - A sample that alerts dies at its blocked upsert and is counted as `alerted_blocked`. One in 1,000 does, matching the local cell's alert rate.
 
-### The wall's latency counter was measuring itself
+### The wall reports ~100 ms per decision and Qdrant is not the reason
 
-The deployed wall reported ~104 ms per decision while Qdrant was answering in 1.9 ms. None of the gap was distance (cluster and function are both us-west-2, confirmed via `x-vercel-id`), the engine, or the scorer's own arithmetic (0.04 ms per event, measured). It was `processBucket` scoring a bucket's ~10 events with `Promise.all`: each event's stage window also covered the time this single-threaded runtime spent on its peers. Decision latency rose with an event's position in its bucket — 71.6 ms for the first, 128.4 ms for the ninth — and a second and third viewer added 30% more, because every SSE connection re-scores the same buckets.
+Measured on the deployment, before and after the 2026-07-28 fix, 5 minutes of `curl -sN <prod>/api/stream` each (~1,540 samples; the route already reports per-stage times, so this needs no instrumentation):
 
-Fixed 2026-07-28, all in `src/app/api/stream/route.ts`: buckets score one event at a time; the Stored Charges counter uses `exact: false` (an exact count scans all 11M points and the cluster reports it averaging 740 ms, fired every 5 s per viewer); the janitor sweep is throttled to once an hour per instance instead of once per connection (the filtered delete costs the cluster ~1.1 s).
+| | p50 | p95 | p99 | min | by position in bucket |
+| --- | --- | --- | --- | --- | --- |
+| `Promise.all` | 104.1 | 172.4 | 215.8 | 23.0 | 72 → 128, rising |
+| sequential | 100.0 | 119.8 | 130.0 | 53.9 | 61, then flat ~100 |
 
-**Not re-measured after the fix.** The predicted p50 is ~75 ms, not a measured one. Re-harvest the deployed stream's own `timings` to confirm — 5 minutes of `curl -sN <prod>/api/stream` gives ~1,500 samples, and it needs no instrumentation because the route already reports per-stage times. The ~60 ms floor on even the first event in a bucket is still unexplained and needs timing instrumentation inside the function to attribute.
+**Scoring a bucket sequentially fixed the tail, not the median.** It was worth doing: p95 fell 30%, p99 fell 40%, and an event's latency no longer depends on where it sits in its bucket, so the counter now reports each event's own cost. But the rising 72 → 128 curve was mostly overlapping measurement windows under `Promise.all`, not the cause of the cost. Every event was already paying ~100 ms.
+
+**That ~100 ms is a fixed per-event cost inside the Next.js function and it is still unattributed.** Ruled out by measurement, so do not re-litigate these: distance (cluster and function are both us-west-2, `x-vercel-id` shows `pdx1`, and one function-to-cluster round trip measures ~4 ms via the `/api/persona` vs `/api/alert/<unused uuid>` difference), the engine (1.9 ms for both round trips), the scorer's own arithmetic (0.04 ms per event), and the Stored Charges count (events right after a `stats` push were *faster* than elsewhere). A second and third viewer add 30%, because every SSE connection re-scores the same buckets. Attributing the rest needs timing instrumentation inside the function; nothing else will settle it.
+
+Also fixed 2026-07-28 in `src/app/api/stream/route.ts`, both on the cluster's behalf rather than for this latency: the Stored Charges counter uses `exact: false` (an exact count scans all 11M points, which the cluster reports averaging 740 ms, fired every 5 s per viewer), and the janitor sweep is throttled to once an hour per instance instead of once per connection (its filtered delete costs the cluster ~1.1 s).
+
+**Quote the engine number, not this one.** The 100 ms is what this demo's wall costs end to end in a serverless function; 1.86 ms is what Qdrant costs, and a same-region service pays that plus its own round trip.
