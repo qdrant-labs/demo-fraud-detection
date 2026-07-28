@@ -50,7 +50,7 @@ import {
 } from "../src/lib/world";
 import { guard, installReadOnlyFetch, srvTime, WriteBlocked } from "./read-only-fetch";
 
-installReadOnlyFetch();
+await installReadOnlyFetch();
 
 // --- Arguments ---------------------------------------------------------------
 function refuse(why: string): never {

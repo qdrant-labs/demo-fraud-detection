@@ -5,9 +5,9 @@
 // tenant by a tenant-keyed payload index (multitenancy).
 
 import { QdrantClient } from "@qdrant/js-client-rest";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 import type { Contrast } from "./explain";
-import { reportBodyMs } from "./fetch-timing";
+import { reportBodyMs, reportFetchMs } from "./fetch-timing";
 import type { RecentHistory } from "./features";
 import { FEATURE_DIM } from "./features";
 import type { Transaction } from "./world";
@@ -157,20 +157,24 @@ export async function deleteStaleScored(maxAgeMs: number): Promise<void> {
 }
 
 // The scorer's per-event calls (context scroll, kNN query, upsert) go straight
-// to Qdrant's REST endpoints with plain fetch instead of through the client.
-// Measured on the deployment 2026-07-28: response HEADERS arrive in ~6.5 ms
-// (network + engine), then the BODY trails in for a further ~43 ms per call —
-// a size-independent stall specific to HTTP/1.1 against the cloud edge, and
-// the whole ~100 ms per-decision story. The edge negotiates HTTP/2 (verified
-// with curl), so these calls pass an h2-enabled dispatcher; over plain http
-// (local Docker) ALPN never runs and the connection stays h1. Everything off
-// the hot path (collection setup, janitor, pickup scroll, counters) keeps the
-// client, where convenience beats a per-call cost nobody is timing.
+// to Qdrant's REST endpoints instead of through the client. Measured on the
+// deployment 2026-07-28: response HEADERS arrive in ~6.5 ms (network + engine),
+// then the BODY trails in for a further ~43 ms per call — size-independent,
+// identical over HTTP/1.1 and HTTP/2, with a healthy event loop (a 1 ms timer
+// fires in 1.15 ms), and the whole ~100 ms per-decision story. Every transport
+// tried so far routed through globalThis.fetch, which Next.js patches on
+// Vercel (data-cache/tracing layer), so these calls use undici's fetch
+// DIRECTLY to keep the hot path off the patched global.
 //
-// Node's global fetch accepts an undici dispatcher in init; going through
-// globalThis.fetch (not undici's own fetch) keeps the read-only-fetch guard
-// and fetch-timing wrapper on this path.
+// scripts/read-only-fetch.ts guards globalThis.fetch for the read-only cloud
+// benchmark; setRestFetch below is its hook into this direct path, and
+// scripts/read-only-fetch.test.ts proves writes stay blocked.
 const h2Dispatcher = new Agent({ allowH2: true, keepAliveTimeout: 10_000 });
+
+let restFetch = undiciFetch as unknown as typeof globalThis.fetch;
+export function setRestFetch(f: typeof globalThis.fetch): void {
+  restFetch = f;
+}
 
 let restBase: { url: string; headers: Record<string, string> } | undefined;
 
@@ -191,13 +195,15 @@ export async function restCall<T>(
       },
     };
   }
-  const res = await fetch(`${restBase.url}/collections/${COLLECTION}${path}`, {
+  const tFetch = performance.now();
+  const res = await restFetch(`${restBase.url}/collections/${COLLECTION}${path}`, {
     method,
     headers: restBase.headers,
     body: JSON.stringify(body),
-    // Non-standard but supported by Node's undici-backed fetch.
+    // Non-standard but supported by undici's fetch.
     dispatcher: h2Dispatcher,
   } as RequestInit);
+  reportFetchMs(performance.now() - tFetch);
   if (!res.ok) {
     throw new Error(`Qdrant ${method} ${path} failed: HTTP ${res.status}`);
   }

@@ -41,7 +41,8 @@ async function main() {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as { port: number }).port;
 
-  installReadOnlyFetch();
+  process.env.QDRANT_URL = `http://127.0.0.1:${port}`; // restCall reads it lazily
+  await installReadOnlyFetch();
   guard.tapping = true;
   const q = new QdrantClient({ url: `http://127.0.0.1:${port}`, apiKey: "stub" });
 
@@ -80,13 +81,21 @@ async function main() {
   await q.getCollection("c");
   assert.ok(seen.includes("GET /collections/c"));
 
-  // The tap read Qdrant's own processing time off both stages, in ms.
+  // The scorer's direct REST path (qdrant.ts restCall) bypasses global fetch;
+  // installReadOnlyFetch hooks it via setRestFetch. Its reads pass, its upsert
+  // is blocked before the wire.
+  const { restCall } = await import("../src/lib/qdrant");
+  await restCall("POST", "/points/scroll", { limit: 1 });
+  await expectBlocked("restCall upsert", () => restCall("PUT", "/points?wait=true", { points: [] }));
+
+  // The tap read Qdrant's own processing time off both stages, in ms (the
+  // restCall scroll above lands a second scroll sample).
   await new Promise((r) => setImmediate(r)); // clone().json() resolves a microtask later
-  assert.deepEqual(srvTime.scroll, [4]);
+  assert.deepEqual(srvTime.scroll, [4, 4]);
   assert.deepEqual(srvTime.query, [7]);
 
-  assert.equal(guard.blocked, 8);
-  console.log(`read-only lock OK: 2 reads through, ${guard.blocked} writes blocked, srv time tapped`);
+  assert.equal(guard.blocked, 9);
+  console.log(`read-only lock OK: 3 reads through, ${guard.blocked} writes blocked, srv time tapped`);
   server.close();
 }
 

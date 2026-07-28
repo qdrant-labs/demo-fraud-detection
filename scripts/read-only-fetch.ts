@@ -30,7 +30,7 @@ export const srvTime: { scroll: number[]; query: number[] } = { scroll: [], quer
 
 export const guard = { tapping: false, blocked: 0 };
 
-export function installReadOnlyFetch(): void {
+export async function installReadOnlyFetch(): Promise<void> {
   const realFetch = globalThis.fetch;
 
   globalThis.fetch = async function readOnlyFetch(
@@ -71,4 +71,11 @@ export function installReadOnlyFetch(): void {
     }
     return res;
   };
+
+  // The scorer's direct REST path (qdrant.ts restCall) bypasses global fetch
+  // on purpose (Next patches the global on Vercel); route it through the same
+  // lock. Imported dynamically so this module stays import-order-safe for
+  // callers that set QDRANT_COLLECTION before touching qdrant.ts.
+  const { setRestFetch } = await import("../src/lib/qdrant");
+  setRestFetch(globalThis.fetch);
 }
