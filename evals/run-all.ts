@@ -14,6 +14,7 @@ const SUITES = [
   "api-contract",
   "motif-detection",
   "cold-start",
+  "crowding",
   "determinism",
   "tenant-isolation",
   "janitor",

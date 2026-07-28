@@ -11,6 +11,7 @@
 
 import { encode, recentHistory, type PriorTx, type RecentHistory } from "./features";
 import { explainAlert, type Contrast } from "./explain";
+import { lastFetchMs } from "./fetch-timing";
 import {
   COLLECTION,
   CONTEXT_LIMIT,
@@ -64,9 +65,9 @@ export function scoreFromVectors(
 }
 
 // Alert when the ratio exceeds this. Tuned via the motif-detection eval's
-// threshold sweep (recall 0.967, precision 0.944, every motif >= 0.9 at 2.0;
-// see evals/TUNING.md); a named constant so the eval and the wall share one
-// source of truth.
+// threshold sweep; evals/TUNING.md is the authoritative record of the measured
+// recall/precision at this value. A named constant so the eval and the wall
+// share one source of truth.
 export const ALERT_THRESHOLD = 2.0;
 
 const NEIGHBOR_K = 10;
@@ -90,6 +91,14 @@ const PREFETCH_LIMIT = 100;
 // Exported so the tenant-isolation eval mirrors this exclusion byte-for-byte
 // instead of running a differently-shaped kNN.
 export const NEIGHBOR_EXCLUDE_MS = 3_600_000; // 1 hour
+
+// How long a persisted scored event stays visible to the context scroll. The
+// scroll needs scored points only while their burst is still forming (event N
+// feeds N+1's recent-history features); after that they are fraud debris that
+// crowds the tenant's newest-30 window and blinds the scorer (the 2026-07-28
+// booth incident; evals/crowding.ts). Baselines carry no `score` field and
+// always qualify. Longest motif spans ~12 min, so 20 min covers a full burst.
+export const CONTEXT_SCORED_WINDOW_MS = 20 * 60_000;
 
 // Floor for d_local when a tenant's neighbors are near-identical (d_local -> 0
 // would blow the ratio up). Below this the local spread is meaningless, so we
@@ -126,12 +135,18 @@ export interface ScoredEvent {
 }
 
 // Optional per-stage wall-clock timing (ms), filled in when a caller passes an
-// object. Used by the latency eval and the wall's p95 ticker.
+// object. Used by the latency eval and the wall's p95 ticker. The *_fetch
+// fields are each stage's inner fetch round trip (headers received), present
+// only when the stream route has installed fetch-timing.ts; the gap between a
+// stage and its fetch is the client's body read + parse + validation.
 export interface StageTimings {
   scroll: number;
   knn: number;
   upsert: number;
   total: number;
+  scroll_fetch?: number;
+  knn_fetch?: number;
+  upsert_fetch?: number;
 }
 
 function euclid(a: number[], b: number[]): number {
@@ -189,6 +204,20 @@ export async function scoreEvent(
         // recentHistory() also drops ts >= now as defense in depth.
         { key: "ts", range: { lt: tx.ts } },
       ],
+      // must AND (baseline OR inside the burst window): scored points enter the
+      // context only while their burst is forming; baselines always qualify.
+      // This is the scroll's counterpart to the kNN's NEIGHBOR_EXCLUDE_MS —
+      // without it, persisted fraud crowds the newest-30 window (see
+      // CONTEXT_SCORED_WINDOW_MS above).
+      should: [
+        { is_empty: { key: "score" } },
+        {
+          key: "ts",
+          range: {
+            gte: new Date(Date.parse(tx.ts) - CONTEXT_SCORED_WINDOW_MS).toISOString(),
+          },
+        },
+      ],
     },
     order_by: { key: "ts", direction: "desc" },
     limit: CONTEXT_LIMIT,
@@ -196,6 +225,7 @@ export async function scoreEvent(
     with_vector: false,
   });
   const t1 = performance.now();
+  const scrollFetch = lastFetchMs();
   const priors = context.points.map((p) => priorFromPayload(p.payload as Record<string, unknown>));
   // Cold-start rule: the first CONTEXT_LIMIT points per tenant are scored but
   // never alerted. OR'd below with the zero-eligible-neighbor case once the kNN
@@ -224,6 +254,13 @@ export async function scoreEvent(
         must: [
           { key: "tenant_id", match: { value: tx.tenant_id } },
           { key: "ts", range: { lt: neighborCutoff } },
+          // Neighbors come from the tenant's baseline only. Scored events are
+          // alert evidence, not established history: a day-old fraud burst is
+          // past NEIGHBOR_EXCLUDE_MS and sits exactly where the next attack
+          // lands, so with the recency boost it becomes the attack's nearest-
+          // neighbor cluster and masks it (evals/crowding.ts reproduces this;
+          // the 2026-07-28 booth incident measured it live).
+          { is_empty: { key: "score" } },
         ],
       },
       limit: PREFETCH_LIMIT,
@@ -253,6 +290,7 @@ export async function scoreEvent(
     limit: NEIGHBOR_K,
   });
   const t2 = performance.now();
+  const knnFetch = lastFetchMs();
 
   const neighborVectors = knn.points.map(vectorOf);
   const neighborIds = knn.points.map((p) => p.id);
@@ -337,6 +375,14 @@ export async function scoreEvent(
     timings.knn = t2 - t1;
     timings.upsert = t3 - t2;
     timings.total = t3 - t0;
+    // Scoped per event via withFetchTiming (stream route), so concurrent
+    // viewers on one instance don't contaminate each other's numbers.
+    if (scrollFetch !== null) timings.scroll_fetch = scrollFetch;
+    if (knnFetch !== null) timings.knn_fetch = knnFetch;
+    if (persist) {
+      const upsertFetch = lastFetchMs();
+      if (upsertFetch !== null) timings.upsert_fetch = upsertFetch;
+    }
   }
 
   return {

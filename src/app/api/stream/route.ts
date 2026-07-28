@@ -10,8 +10,9 @@
 // no drift.
 
 import type { Contrast } from "@/lib/explain";
+import { withFetchTiming } from "@/lib/fetch-timing";
 import { scoreEvent, type StageTimings } from "@/lib/score";
-import { COLLECTION, deleteStaleScored, ensureCollection, qdrant } from "@/lib/qdrant";
+import { COLLECTION, deleteStaleScored, ensureCollection, qdrant, vectorOf } from "@/lib/qdrant";
 import {
   BUCKET_MS,
   EPOCH,
@@ -47,17 +48,6 @@ function currentBucket(): number {
   return Math.floor((Date.now() - EPOCH) / BUCKET_MS);
 }
 
-// A picked-up point's vector arrives as { features: [...] } (named vector). Pull
-// the array out regardless of shape; empty if absent.
-function vectorOf(v: unknown): number[] {
-  if (Array.isArray(v)) return v as number[];
-  if (v && typeof v === "object") {
-    const named = (v as Record<string, unknown>).features;
-    if (Array.isArray(named)) return named as number[];
-  }
-  return [];
-}
-
 // The wire shape shared by generated and picked-up events. Generated events
 // carry stage timings; picked-up attacks are replayed from payload, not
 // rescored, so their timings are null.
@@ -85,7 +75,6 @@ interface WallEvent {
   card_present: boolean;
   score: number;
   alerted: boolean;
-  learning: boolean;
   explanation: string;
   channel_src: string;
   bucket: number | null; // processing bucket for generator events; null for pickups
@@ -197,7 +186,12 @@ export async function GET(req: Request): Promise<Response> {
             // as they score); ambient background traffic is shown but not stored,
             // so its "now" timestamp never crowds the baseline out of later
             // events' recent-history. Alerts still persist (see scoreEvent).
-            const s = await scoreEvent(tx, timings, { persist: tx.motif !== "none" });
+            // withFetchTiming attributes the deployed per-decision cost: each
+            // stage's wall splits at the fetch boundary into *_fetch fields on
+            // the wire (see fetch-timing.ts), scoped so viewers don't mix.
+            const s = await withFetchTiming(() =>
+              scoreEvent(tx, timings, { persist: tx.motif !== "none" }),
+            );
             emit({
               id: tx.id,
               tenant_id: tx.tenant_id,
@@ -214,7 +208,6 @@ export async function GET(req: Request): Promise<Response> {
               card_present: tx.card_present,
               score: s.score,
               alerted: s.alerted,
-              learning: s.learning,
               explanation: s.explanation,
               channel_src: tx.channel_src,
               bucket,
@@ -274,7 +267,6 @@ export async function GET(req: Request): Promise<Response> {
             card_present: Boolean(pl.card_present),
             score: Number(pl.score ?? 0),
             alerted,
-            learning: false,
             explanation: String(pl.explanation ?? ""),
             channel_src: "browser_attack",
             bucket: null,

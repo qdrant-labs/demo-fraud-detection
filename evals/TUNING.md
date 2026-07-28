@@ -141,6 +141,19 @@ The post-interleaving results recorded earlier (default 0.800 / 0.843, holdout 0
 
 Treat this section as the record. Both seeds still clear the gates at the shipped threshold 2.0, and nothing was retuned.
 
+## Crowding fix 2026-07-28 (detection results unchanged, byte-identical)
+
+The booth incident (persisted fraud injections crowd a persona's context and kNN pool until fresh attacks stop alerting; measured live on t0011, attacks at 1.18-1.27 instead of 5.49) is fixed in the scoring path and gated by a new eval, `evals/crowding.ts`, which replays the incident against a throwaway collection.
+
+Two changes in `score.ts`, both filter-only:
+
+1. **Context scroll**: `should: [is_empty(score), ts >= event - 20 min]` — a scored event feeds recent-history features only while its burst is forming; baselines always qualify (`CONTEXT_SCORED_WINDOW_MS`).
+2. **kNN prefetch**: `is_empty(score)` added to `must` — neighbors come from the seeded baseline only. The scroll clause alone does NOT fix the incident: day-old fraud is past `NEIGHBOR_EXCLUDE_MS`, sits where the next attack lands, and the recency term makes it the attack's neighbor cluster (crowding eval measured geo_hop at 1.44 with the scroll fix alone, 5.15 with both).
+
+Both motif-detection seeds reproduce the 2026-07-27 tables **byte-identically** (default 156/51/104/4650, holdout 169/34/91/4666): the eval's stream is dense enough that excluded scored points were either already outside the 1-hour kNN exclusion's reach or interchangeable with baseline in the 30-slot median, so nothing was retuned and every number in the section above stands.
+
+**Cold-start semantics changed deliberately.** A tenant with no seeded baseline now stays in `learning` forever: scored events are alert evidence, not established history, so history enters the baseline through the profile pipeline (`scripts/seed.ts`), never through the scoring path. The cold-start eval asserts the new behavior (zero alerts, learning stays true, finite scores). The previous "graduates at event 31" rule cannot coexist with the crowding fix — any time-based rule that admits a fresh tenant's scored history also re-admits a booth day's fraud debris.
+
 ### Ladder recall stays as measured
 
 Ladder sits at 0.50 (default) and 0.85 (holdout), against 1.00 for card testing and impossible travel on both seeds. The explanation from the interleaving round still holds: a ladder step competes with fresh background traffic at the same merchant for the 30 recent-history slots, so its escalation chain is shorter by the time it scores. Publish the number with that explanation rather than retuning for it.

@@ -1,14 +1,17 @@
 // Cold start (PLAN eval 3). A fresh, unseeded tenant streams 50
-// profile-conforming events at an empty throwaway collection. The learning
-// window (CONTEXT_LIMIT = 30) must suppress every alert while the tenant has
-// fewer than 30 prior points, and scoring must behave normally after.
+// profile-conforming events at an empty throwaway collection. A tenant with no
+// seeded baseline must never alert: scored events are alert evidence, not
+// established history (the crowding fix, see CONTEXT_SCORED_WINDOW_MS in
+// score.ts), so history enters the baseline through the profile pipeline
+// (scripts/seed.ts), never through the scoring path. Until that happens the
+// tenant stays in the learning state.
 //
 // The 200 seeded tenants never exercise this rule (they start with 300+ points),
 // so this is the only eval that proves the cold-start guard.
 //
-// Scenario 1 asserts: zero alerts among events 1-30; the `learning` flag is true
-// for 1-30 and false for 31-50 (flips exactly at event 31); all 50 scores are
-// finite; at most 2 of events 31-50 alert (no alert storm on conforming traffic).
+// Scenario 1 asserts: zero alerts across all 50 events; the `learning` flag
+// stays true for all 50 (scored-only history never graduates a tenant); all 50
+// scores are finite.
 //
 // Scenario 2 streams 35 events one minute apart, all inside one hour, at a second
 // fresh tenant. It asserts no crash, zero alerts, and that every event past the
@@ -49,31 +52,21 @@ async function main() {
       if (!ok) failures++;
     };
 
-    const alertsInWindow = ordered.slice(0, WINDOW).filter((s) => s.alerted).length;
-    check("no alerts inside the 30-event learning window", alertsInWindow === 0, `${alertsInWindow} alerts`);
+    const alerts = ordered.filter((s) => s.alerted).length;
+    check("zero alerts across all 50 events", alerts === 0, `${alerts} alerts`);
 
-    const learningWindow = ordered.slice(0, WINDOW).every((s) => s.learning === true);
-    const learningAfter = ordered.slice(WINDOW).every((s) => s.learning === false);
+    const stillLearning = ordered.every((s) => s.learning === true);
     check(
-      "learning flag flips exactly at event 31",
-      learningWindow && learningAfter,
-      `window all-true=${learningWindow}, after all-false=${learningAfter}`,
+      "learning stays true for all 50 (scored-only history never graduates)",
+      stillLearning,
     );
 
     const allFinite = ordered.every((s) => Number.isFinite(s.score));
     check("all 50 scores are finite", allFinite);
 
-    const alertsAfter = ordered.slice(WINDOW).filter((s) => s.alerted).length;
-    check(
-      "conforming events 31-50 do not alert-storm (<= 2 alerts)",
-      alertsAfter <= 2,
-      `${alertsAfter} alerts in events 31-50`,
-    );
-
     console.log(
-      `\nAlerts: window(1-30)=${alertsInWindow}, after(31-50)=${alertsAfter}. ` +
-        `Scores 31-50 range [${Math.min(...ordered.slice(WINDOW).map((s) => s.score)).toFixed(2)}, ` +
-        `${Math.max(...ordered.slice(WINDOW).map((s) => s.score)).toFixed(2)}].`,
+      `\nScores range [${Math.min(...ordered.map((s) => s.score)).toFixed(2)}, ` +
+        `${Math.max(...ordered.map((s) => s.score)).toFixed(2)}] (all learning, none alerted).`,
     );
 
     // Scenario 2: a fresh tenant receiving 35 events 1 minute apart, all inside

@@ -40,8 +40,8 @@ async function main() {
   const events = eventsForTenant();
   if (events.length < N) throw new Error(`only found ${events.length} events for ${TENANT}`);
 
-  const stages: (keyof StageTimings)[] = ["scroll", "knn", "upsert", "total"];
-  const samples: Record<keyof StageTimings, number[]> = { scroll: [], knn: [], upsert: [], total: [] };
+  const stages = ["scroll", "knn", "upsert", "total"] as const;
+  const samples: Record<(typeof stages)[number], number[]> = { scroll: [], knn: [], upsert: [], total: [] };
 
   for (const ev of events) {
     const t: Partial<StageTimings> = {};

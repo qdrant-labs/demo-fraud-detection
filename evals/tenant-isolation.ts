@@ -40,6 +40,9 @@ async function knn(vector: number[], tenantId: string, eventTs: string) {
         must: [
           { key: "tenant_id", match: { value: tenantId } },
           { key: "ts", range: { lt: neighborCutoff } },
+          // Baseline-only, matching score.ts: scored events are alert evidence,
+          // not established history (see CONTEXT_SCORED_WINDOW_MS there).
+          { is_empty: { key: "score" } },
         ],
       },
       limit: 100,
