@@ -81,3 +81,35 @@ QDRANT_URL=<cloud> QDRANT_API_KEY=<key> QDRANT_COLLECTION=fraud_demo \
 **What the investigation left that is worth keeping:** the context scroll uses a payload `include` list (6 fields) and the kNN another (4), cutting bodies ~3x. **A new payload field the scorer reads MUST be added to the include list in `score.ts` or it comes back undefined, silently.** The trap most likely to eat a day.
 
 **Quote the engine number, not the wall's counter.** 1.86 ms decision p50 is what Qdrant costs (`evals/results/cloud-latency.jsonl`); ~100 ms is the demo's serverless wrapper plus the REST edge stall.
+
+## The 2026-07-31 outage: a cluster restart the app never recovered from
+
+**Attributed 2026-08-03. The cluster was not the problem for most of the hour.** Qdrant restarted at **15:41:34 UTC** (`/telemetry` `app.startup`, raft term 38). The wall then read "Reconnecting" until a redeploy at **16:41:03 UTC** — the same commit, from the CLI, with no env change (`QDRANT_URL`/`QDRANT_API_KEY` untouched for 23 days). A redeploy of identical code fixing it is the tell: the broken state was in the serverless instance, not in the code or the cluster.
+
+`ensureCollection()` memoized its own failure. `??=` does not replace a non-nullish value and a rejected promise is not nullish, so the one call that failed against the restarting cluster stuck to the warm instance forever. The SSE route awaits it on its first line, so every EventSource reconnect replayed the original error and only replacing the instances cleared it. Fixed: the memo now caches success only. `scripts/ensure-collection.test.ts` reproduces the outage against a stub server that is unavailable once, then healthy, and fails if the failure is cached again. No cluster or credentials needed.
+
+The lesson generalizes past this one function: **any module-scope memo in a serverless instance turns a transient backend blip into downtime that outlives it.** A cache of a failure needs an eviction path or it is a permanent outage with extra steps.
+
+### `fraud_demo` shares a cluster with twelve other collections
+
+The OOM notification is a cluster fact, not a demo fact, and nothing here can attribute it. Estimated resident RAM at 2026-08-03, from each collection's vector config (every collection on this cluster has `hnsw_config.on_disk: false`, so all their graphs are resident):
+
+| Collection | Points | Resident vectors | + graph | ≈ Total |
+|---|---|---|---|---|
+| `startups_3m` | 3.0M | 384-d float32, no quantization | 0.4 GB | **5.0 GB** |
+| `products` | 5.8M | 384-d int8 `always_ram`, both vectors `on_disk` | 1.5 GB (2 graphs) | **3.7 GB** |
+| `startups_hybrid` | 0.7M | 1024-d float32, no quantization | 0.1 GB | **3.1 GB** |
+| `fraud_demo` | 11.0M | 31-d float32 | 1.4 GB | **2.8 GB** |
+| others (9) | ~4.9M | mostly `on_disk` | — | ~1.0 GB |
+
+So `fraud_demo` is roughly **18% of ~15.5 GB** — fourth largest, despite having the most points, because 31 dimensions is cheap. Ten million points is not what fills this cluster; 384- and 1024-dimensional collections held in RAM unquantized are.
+
+**This reverses the 2026-07-28 finding, and that is the lead.** That round scaled the cluster 16 GB -> 32 GB and recorded `fraud_demo` as *the only* collection on it keeping vectors in RAM with `hnsw_config.on_disk: false` and no quantization, across **8** collections. There are now **13**, and three are RAM-resident unquantized. `startups_3m` (~5.0 GB) and `startups_hybrid` (~3.1 GB) therefore cannot have been among the eight, so roughly **8 GB of new resident RAM landed on this cluster between 2026-07-28 and 2026-08-03** — and the OOM sits inside that window, on 07-31. Loading a 3M-point 384-d collection also spikes well past its resting size while the optimizer builds the graph and holds a second copy of the merging segment, which is the exact mechanism that killed the node on 07-28. Check that before touching the demo; `fraud_demo` has not changed since the 07-27 merge.
+
+The data-plane API reports the k8s **node's** RAM (`system.ram_size`, 62 GB), never the pod limit, so the cluster's real ceiling only comes from the Qdrant Cloud console. `collection_hardware_metric_cpu` in `/metrics` resets on restart and is the fastest way to see who is actually working the cluster: since the 07-31 restart `products` has burned **47x** `fraud_demo`'s CPU. That metric also listed `hybrid_probe` and `ci_probe_0`-`ci_probe_7`, none of which exist in `/collections` — CI creates and drops collections on this shared cluster, and collection builds are the classic memory spike.
+
+**Do not re-investigate the ~100 ms wall counter after an outage.** Measured 2026-08-03 from the deployed function: `scroll` p50 49.8 ms, `knn` p50 50.1 ms, `total` p50 **100.3 ms** over 240 events, unchanged from the 07-28 attribution above. The first event on a cold instance reads ~1,270 ms (connection setup, not the engine); sample past it before reading a regression into one number.
+
+### The public URL is the `eta` alias
+
+`demo-fraud-detection-eta.vercel.app` serves 200. The `demo-fraud-detection-qdrant.vercel.app` alias sits behind Vercel SSO and 302s to `vercel.com/sso-api`, so it is useless for checking whether the demo is up — an SSO redirect is not an outage.

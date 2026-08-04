@@ -53,9 +53,23 @@ export const qdrant = new Proxy({} as QdrantClient, {
 // Memoized per serverless instance: the SSE route calls this on every
 // connection open, and 6 round trips per reconnect for state that cannot
 // change mid-deploy is wasted work.
+//
+// Only SUCCESS is memoized. `??=` does not replace a non-nullish value, and a
+// rejected promise is not nullish, so caching the failure made one bad call
+// permanent for the life of the instance: the SSE route awaits this on its first
+// line, so every later reconnect replayed the original error and the wall sat on
+// "Reconnecting" until a redeploy replaced the instances. That is the 2026-07-31
+// outage, an hour of downtime from a cluster restart that lasted seconds.
+// `scripts/ensure-collection.test.ts` holds the line.
 let ensured: Promise<void> | undefined;
 export function ensureCollection(): Promise<void> {
-  return (ensured ??= ensureCollectionNow());
+  // Clear only if this attempt is still the memoized one, so a late rejection
+  // cannot wipe a newer attempt installed by resetEnsuredCollection().
+  const attempt: Promise<void> = (ensured ??= ensureCollectionNow().catch((err) => {
+    if (ensured === attempt) ensured = undefined; // next connection retries
+    throw err;
+  }));
+  return attempt;
 }
 
 // Clear the memo so the next ensureCollection re-runs. The memo assumes the
